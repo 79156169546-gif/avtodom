@@ -1,0 +1,32 @@
+# Конфигурация деплоя на Netlify (frontend).
+# Файл лежит в frontend/, поэтому base не нужен: деплой идёт из этой папки
+# (`netlify deploy --prod --dir=dist`), а publish указывает на собранный dist.
+
+[build]
+  command = "npm run build"
+  publish = "dist"
+
+# SPA-роутинг: /cabinet, /admin, /login, /register отдаются index.html
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
+
+# Заголовки безопасности
+[[headers]]
+  for = "/*"
+  [headers.values]
+    X-Frame-Options = "SAMEORIGIN"
+    X-Content-Type-Options = "nosniff"
+    Referrer-Policy = "strict-origin-when-cross-origin"
+
+# Кэш ассетов с хешем в имени — на год; index.html не кэшируем
+[[headers]]
+  for = "/assets/*"
+  [headers.values]
+    Cache-Control = "public, max-age=31536000, immutable"
+
+[[headers]]
+  for = "/index.html"
+  [headers.values]
+    Cache-Control = "public, max-age=0, must-revalidate"

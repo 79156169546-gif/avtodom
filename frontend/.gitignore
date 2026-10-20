@@ -1,0 +1,18 @@
+# Каталог загружен — статику кэшируем, но API всегда свежий.
+dist/assets/*
+!dist/assets/*.js
+!dist/assets/*.css
+
+# Локальное окружение
+.env
+.env.local
+.env.*.local
+
+# Логи
+*.log
+npm-debug.log*
+
+# Редакторы / ОС
+.vscode/
+.idea/
+.DS_Store

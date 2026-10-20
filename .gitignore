@@ -1,0 +1,29 @@
+# Секреты и окружение
+.env
+.env.local
+.env.*.local
+backend/.env.telegram
+
+# Python
+backend/.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Node
+node_modules/
+frontend/dist/
+npm-debug.log*
+
+# Артефакты тестов
+.playwright-mcp/
+*.log
+
+# Редакторы / ОС
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Local Netlify folder
+.netlify
