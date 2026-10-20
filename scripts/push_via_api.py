@@ -25,11 +25,25 @@ API = "https://api.github.com"
 
 
 def load_token() -> str:
-    cfg = Path.home() / ".config" / "gh" / "hosts.yml"
-    match = re.search(r"oauth_token:\s*(\S+)", cfg.read_text(encoding="utf-8"))
-    if not match:
-        raise RuntimeError("нет oauth_token в ~/.config/gh/hosts.yml")
-    return match.group(1)
+    """Токен из конфига gh.
+
+    gh на Windows читает %APPDATA%\\GitHub CLI\\hosts.yml, на остальных
+    платформах — ~/.config/gh/hosts.yml. Проверяем оба пути.
+    """
+    candidates = [
+        Path.home() / ".config" / "gh" / "hosts.yml",
+        Path(os.environ.get("APPDATA", "")) / "GitHub CLI" / "hosts.yml",
+    ]
+    for cfg in candidates:
+        if not cfg.is_file():
+            continue
+        match = re.search(r"oauth_token:\s*(\S+)", cfg.read_text(encoding="utf-8"))
+        if match:
+            return match.group(1)
+    raise RuntimeError(
+        "нет oauth_token — выполните `gh auth login` "
+        "(или `gh auth setup-git` после ручной авторизации)"
+    )
 
 
 def request(method: str, path: str, token: str, body: dict | None = None) -> tuple[int, object]:
