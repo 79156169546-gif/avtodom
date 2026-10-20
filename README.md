@@ -576,22 +576,51 @@ cd "C:/Users/79156/OneDrive/Desktop/автодом/backend"
 Оба — бесплатные тарифы. Порядок обязателен: бэкенд поднимается первым,
 потому что адрес API вшивается в бандл фронтенда на этапе сборки.
 
+### Публичные адреса
+
+| Служба | URL |
+|---|---|
+| Витрина (фронтенд) | **https://avtodom-storefront.netlify.app** |
+| API (бэкенд) | **https://avtodom-api.onrender.com** |
+| Health-check | **https://avtodom-api.onrender.com/api/health** |
+| Репозиторий | **https://github.com/79156169546-gif/avtodom** |
+
+Проверка: `GET /api/health` → `{"status":"ok","database":"ok","telegram":"ready"}`.
+
+> **Особенность бесплатного Render:** инстанс засыпает после 15 минут без
+> запросов. Первый запрос после паузы отвечает 30–90 секунд (холодный старт).
+> Для владельца это означает: после ночи первое открытие витрины может быть
+> медленным. Frontend покажет «Загрузка…», а не ошибку.
+
 ### Автоматически — одним скриптом
 
 ```bash
 python scripts/deploy.py
 ```
 
-Скрипт выполняет весь цикл: создаёт приватный репозиторий на GitHub →
-запушивает код → создаёт Web Service на Render → ждёт ответа `/api/health` →
-собирает фронтенд с `VITE_API_BASE` → деплоит на Netlify → заменяет
-`CORS_ORIGINS=*` на точный домен Netlify.
+Скрипт выполняет весь цикл: создаёт репозиторий на GitHub → запушивает код →
+создаёт Web Service на Render → ждёт ответа `/api/health` → собирает фронтенд
+с `VITE_API_BASE` → деплоит на Netlify → заменяет `CORS_ORIGINS=*` на точный
+домен Netlify.
 
 Секреты не попадают в аргументы командной строки: `DATABASE_URL`,
 `TELEGRAM_BOT_TOKEN` и `TELEGRAM_CHAT_ID` читаются из `.env.local` и
 `backend/.env.telegram` и уходят в Render по HTTPS API.
 
 Требуется авторизация CLI: `gh auth login`, `netlify login`, `render login`.
+
+### Если `git push` зависает
+
+`git push` по HTTPS может зависнуть на интерактивном запросе пароля, а
+`gh auth login --web` — истечь по таймауту, пока вы не успели подтвердить код.
+Обходной путь — загрузить код напрямую через Git Data API, имея PAT:
+
+```bash
+python scripts/push_via_api.py            # токен берётся из ~/.config/gh/hosts.yml
+```
+
+Скрипт создаёт blob для каждого файла, затем дерево, коммит и обновляет
+ветку. Работает без `git push` и без интерактивного ввода.
 
 ### Фронтенд (Netlify)
 
