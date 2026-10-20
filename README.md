@@ -1,0 +1,678 @@
+# Витрина заказов 24/7 — «Автодом»
+
+Мобильная витрина автозапчастей для автомагазина **«Автодом»** (Рязань,
+ул. Высоковольтная, 49). Клиент собирает корзину, проходит пятишаговую форму,
+заказ пишется в PostgreSQL (Neon) и уходит менеджеру в Telegram с
+inline-кнопками **«Принял / Перезвонил / Отказ»**. Нажатие на кнопку меняет
+статус заказа — клиент видит его в личном кабинете.
+
+> **Пользователю магазина:** как оформить заказ, как управлять каталогом,
+> как работают кнопки в Telegram — в файле **[РУКОВОДСТВО.md](РУКОВОДСТВО.md)**.
+> Этот README — техническое описание для разработчика.
+
+---
+
+## Содержание
+
+1. [Возможности](#1-возможности)
+2. [Архитектура](#2-архитектура)
+3. [Структура проекта](#3-структура-проекта)
+4. [Быстрый старт](#4-быстрый-старт)
+5. [Конфигурация](#5-конфигурация)
+6. [База данных](#6-база-данных)
+7. [API](#7-api)
+8. [Telegram-интеграция](#8-telegram-интеграция)
+9. [Авторизация и права](#9-авторизация-и-права)
+10. [Каталог и оформление заказа](#10-каталог-и-оформление-заказа)
+11. [Дизайн-система](#11-дизайн-система)
+12. [Тесты](#12-тесты)
+13. [Деплой](#13-деплой)
+14. [Решение проблем](#14-решение-проблем)
+
+---
+
+## 1. Возможности
+
+### Витрина
+
+| Функция | Реализация |
+|---|---|
+| Каталог с карточками, ценами и скидками | `frontend/src/components/ProductCard.jsx` |
+| Корзина с закреплённой панелью «Итого / Оформить» | `frontend/src/components/CartBar.jsx` |
+| Корзина переживает перезагрузку страницы | `frontend/src/storage.js` (localStorage) |
+| **Поиск по названию, бренду, артикулу, категории** | `frontend/src/pages/StorefrontPage.jsx` (`matchesQuery`) |
+| **Фильтры: наличие, категория, бренд** | там же, + чипы категорий над сеткой |
+| **5 сортировок** (популярность, цена ↑↓, скидка, алфавит) | `sortProducts` в `ProductCard.jsx` |
+| **Детали «под заказ»** с бейджем и сроком поставки | `products.is_on_order` + `products.order_days` |
+| Счётчик найденного, сброс фильтров, пустое состояние | `StorefrontPage.jsx` |
+| Skeleton-загрузка карточек | `frontend/src/components/ProductSkeleton.jsx` |
+
+### Шапка
+
+| Элемент | Поведение |
+|---|---|
+| Название и логотип | ссылка на витрину |
+| **Телефон** `+7 (961) 010-80-01` | `tel:` — открывает звонилку |
+| **Адрес** `ул. Высоковольтная, 49, Рязань` | открывает Яндекс.Карты с точкой магазина |
+| Рейтинг и режим работы | `★ 4,7 (147)`, точка «открыто/закрыто» |
+| Мобильная версия | кнопки 📞 и 📍 в шапке, меню — отдельной строкой |
+
+### Оформление заказа (5 шагов)
+
+| Шаг | Что спрашивают | Обязательно |
+|---|---|---|
+| 1 | Марка, модель, VIN | нет (VIN помечен «необязательно») |
+| 2 | Запчасти — проверка состава | — |
+| 3 | Получение — только самовывоз, 8:00–20:00 | да |
+| 4 | Имя, телефон, Telegram, комментарий | **имя и телефон** |
+| 5 | Подтверждение и «Оформить заказ» | да |
+
+- **Автодополнение марок и моделей** — подсказки по первым буквам, работают
+  русские синонимы («киа» → KIA), 38 марок в `backend/cars.py`.
+- **Телефон валидируется** — 10–15 цифр, номера из одной повторяющейся цифры
+  (`111111111`) и «placeholder»-вида отклоняются на клиенте и на сервере.
+- **Telegram и комментарий** — необязательные, помечены бейджем.
+
+### Приоритетные заказы
+
+Заказы в нерабочее время (**20:00–08:00**, магазин закрыт) получают приоритет:
+
+- в уведомлении менеджеру — `🌙 Приоритетный заказ (20:00–08:00 — магазин закрыт)`;
+- в кабинете клиента и владельца — плашка `🌙 приоритет`;
+- в кабинете владельца — отдельный фильтр «Только приоритетные».
+
+### Кабинет клиента `/cabinet`
+
+Регистрация, вход, история заказов с таймлайном статусов, автообновление
+раз в 30 секунд. Данные из профиля подставляются в форму заказа автоматически.
+
+### Кабинет владельца `/admin`
+
+| Функция | Детали |
+|---|---|
+| Сводка | заказов всего, новых, выручка за сегодня, товаров в каталоге |
+| **Фильтры заказов** | статус (с количеством), период, поиск, диапазон дат, сортировка, «только приоритетные», счётчик и сброс |
+| Смена статуса | 7 статусов кнопками, событие пишется в таймлайн |
+| Состав заказа | позиции с ценами, пометка «под заказ» со сроком |
+| **CRUD каталога** | добавление, правка, цена, скидка, наличие, **«под заказ» + срок поставки**, скрытие/восстановление |
+
+---
+
+## 2. Архитектура
+
+```
+┌─────────────────────┐        ┌──────────────────────┐        ┌─────────────────┐
+│  Браузер            │  /api  │  FastAPI (8000)      │ asyncpg│  Neon           │
+│  React + Vite       │ ─────► │  main.py             │ ─────► │  PostgreSQL     │
+│  (5173)             │        │  auth / models       │        │  7 таблиц       │
+└─────────────────────┘        └──────────┬───────────┘        └─────────────────┘
+     │                                     │ mcp stdio / Bot API
+     │                                     ▼
+     │                            ┌──────────────────────┐
+     └────── кабинет клиента ────►│  Telegram-бот        │
+            (статус заказа)        │  tgbot-mcp + poller  │
+                                     └──────────────────────┘
+```
+
+**Ключевые решения**
+
+| Решение | Почему |
+|---|---|
+| Цены считает сервер | клиент присылает только `product_id` и `qty` — сумму подделать нельзя |
+| Корзина в `localStorage` | переживает перезагрузку без преждевременного усложнения серверной корзиной |
+| Сессии в БД, Bearer-токен | проще JWT для маленького приложения; сессия 30 дней, logout удаляет токен |
+| Снимок состояния товара в позиции заказа | `is_on_order` и `order_days` копируются в `order_items` — правка каталога не портит историю |
+| Мягкое удаление товара | `is_active` вместо `DELETE` — позиция может быть в старых заказах |
+| Telegram через MCP + резерв | требование задачи — `send_notification_with_buttons`; при недоступности MCP работает прямой Bot API |
+| `callback_data` = текст кнопки | ограничение `tgbot-mcp`; заказ определяется по `message_id` |
+
+---
+
+## 3. Структура проекта
+
+```
+автодом/
+├── frontend/                      React 18 + Vite 5 + Tailwind 3 (Mobile-First)
+│   ├── index.html
+│   ├── vite.config.js             dev-сервер + прокси /api → :8000
+│   ├── tailwind.config.js         палитра accent
+│   ├── public/favicon.svg
+│   └── src/
+│       ├── main.jsx               BrowserRouter + AuthProvider
+│       ├── App.jsx                шапка с контактами + маршруты
+│       ├── api.js                 клиент API, токен в localStorage
+│       ├── auth.jsx               контекст авторизации
+│       ├── storage.js             корзина и контакты в localStorage
+│       ├── index.css              дизайн-система (.card, .field, .btn-primary…)
+│       ├── lib/format.js          цены, склонения, статусы
+│       ├── components/
+│       │   ├── ProductCard.jsx    карточка + сортировки
+│       │   ├── ProductSkeleton.jsx
+│       │   ├── CartBar.jsx        sticky-панель
+│       │   ├── CheckoutSheet.jsx  5 шагов формы
+│       │   └── Combobox.jsx       автодополнение марок и моделей
+│       └── pages/
+│           ├── StorefrontPage.jsx витрина, поиск, фильтры
+│           ├── LoginPage.jsx
+│           ├── RegisterPage.jsx
+│           ├── CabinetPage.jsx    кабинет клиента
+│           └── AdminPage.jsx      кабинет владельца
+│
+├── backend/                       FastAPI + asyncpg + MCP-клиент tgbot-mcp
+│   ├── main.py                    эндпоинты, кабинеты, запись заказа
+│   ├── models.py                  схемы pydantic + валидация телефона
+│   ├── auth.py                    PBKDF2-пароли, сессии, зависимости
+│   ├── cars.py                    справочник 38 марок и моделей
+│   ├── telegram.py                MCP + резерв Bot API + poller кнопок
+│   ├── db.py                      пул asyncpg
+│   ├── settings.py                конфигурация из .env-файлов
+│   ├── schema.sql                 схема БД (идемпотентная)
+│   ├── requirements.txt
+│   └── scripts/
+│       ├── apply_schema.py        применение схемы
+│       ├── seed_products.py       наполнение каталога
+│       ├── sync_telegram_env.py   токен/чат из конфига Hermes
+│       ├── create_owner.py        создание/ротация владельца
+│       ├── smoke_test.py          сквозная проверка API
+│       ├── test_accounts.py       регистрация, кабинеты, CRUD, права
+│       ├── test_checkout.py       оформление: подсказки, телефон, фильтры
+│       ├── test_on_order.py       система «под заказ»
+│       ├── test_telegram_buttons.py обработка нажатий
+│       └── test_telegram.py       оба канала Telegram
+│
+├── docs/screenshots/              17 скриншотов интерфейса
+├── scripts/
+│   ├── stop-port.ps1               освобождение порта (PowerShell)
+│   └── deploy.py                   автономный деплой: GitHub → Render → Netlify
+├── frontend/netlify.toml           SPA-редирект, кэш, заголовки для Netlify
+├── start-backend.bat              запуск API (сам освобождает порт 8000)
+├── start-frontend.bat             запуск витрины (сам освобождает порт 5173)
+├── stop-all.bat                   остановка обоих сервисов
+├── .env.local                     DATABASE_URL проекта Neon
+└── .neon / neon.ts                метаданные Neon-проекта
+```
+
+**Технологии и версии**
+
+| Слой | Стек |
+|---|---|
+| Фронтенд | React 18.2, Vite 5.4, Tailwind CSS 3.4, react-router-dom 6.30 |
+| Бэкенд | FastAPI 0.150, uvicorn 0.54, pydantic 2.14, asyncpg 0.32, mcp 2.3, httpx 0.28 |
+| БД | PostgreSQL (Neon) |
+| Интеграции | Telegram: MCP `tgbot-mcp` + резервный Bot API |
+
+---
+
+## 4. Быстрый старт
+
+### Требования
+
+- Node.js 18+ (проверено на 24.19) и npm
+- Python 3.12+ и [`uv`](https://docs.astral.sh/uv/)
+- Доступ к проекту Neon (уже настроен) и к боту в Telegram
+
+### 4.1. Самый быстрый путь — скрипты
+
+```bash
+# Двойной клик по start-backend.bat   → API на :8000
+# Двойной клик по start-frontend.bat  → витрина на :5173
+# Двойной клик по stop-all.bat        → остановить оба
+```
+
+Скрипты сами освобождают порт (через `scripts/stop-port.ps1` и
+`Get-NetTCPConnection`), создают venv, ставят зависимости и запускают сервисы.
+`.bat`-файлы сохранены в кодировке OEM 866 — `cmd.exe` не читает их в UTF-8.
+
+### 4.2. Ручная подготовка (один раз)
+
+```bash
+cd "C:/Users/79156/OneDrive/Desktop/автодом/backend"
+
+# Виртуальное окружение и зависимости
+uv venv .venv --python 3.12
+uv pip install --python .venv/Scripts/python.exe -r requirements.txt
+
+# Схема БД (идемпотентно)
+./.venv/Scripts/python.exe scripts/apply_schema.py
+
+# Telegram-реквизиты из конфига Hermes → backend/.env.telegram
+./.venv/Scripts/python.exe scripts/sync_telegram_env.py
+
+# Каталог: 10 деталей (ON CONFLICT (sku) DO UPDATE)
+./.venv/Scripts/python.exe scripts/seed_products.py
+
+# Владелец магазина
+./.venv/Scripts/python.exe scripts/create_owner.py \
+    --email owner@autodom.ru --password "секрет"
+```
+
+```bash
+cd "C:/Users/79156/OneDrive/Desktop/автодом/frontend"
+npm install
+```
+
+### 4.3. Запуск
+
+```bash
+# Терминал 1 — API
+cd "C:/Users/79156/OneDrive/Desktop/автодом/backend"
+./.venv/Scripts/python.exe -m uvicorn backend.main:app \
+    --host 127.0.0.1 --port 8000 --app-dir ..
+
+# Терминал 2 — витрина
+cd "C:/Users/79156/OneDrive/Desktop/автодом/frontend"
+npm run dev
+```
+
+Открыть **http://127.0.0.1:5173** — Vite проксирует `/api` на
+`http://127.0.0.1:8000`.
+
+Проверка: `curl http://127.0.0.1:8000/api/health` →
+`{"status":"ok","database":"ok","telegram":"ready"}`
+
+> **Примечание для агентов:** долгоживущие dev-серверы на этом хосте лучше
+> запускать через `Start-Process` (PowerShell), а не через фоновый процесс
+> терминала — тогда Hermes не шлёт уведомления «process exited» при каждом
+> перезапуске.
+
+---
+
+## 5. Конфигурация
+
+Все параметры читаются из файлов, переменные окружения имеют приоритет.
+Источники: `backend/.env`, `backend/.env.telegram`, `.env.local` в корне.
+
+### Обязательные
+
+| Переменная | Где | Назначение |
+|---|---|---|
+| `DATABASE_URL` | `.env.local` | pooled-строка Neon |
+| `TELEGRAM_BOT_TOKEN` | `backend/.env.telegram` | токен бота |
+| `TELEGRAM_CHAT_ID` | `backend/.env.telegram` | чат менеджера |
+
+### Необязательные
+
+| Переменная | По умолчанию | Назначение |
+|---|---|---|
+| `CORS_ORIGINS` | `127.0.0.1:5173`, `localhost:5173` | разрешённые origin'ы |
+| `STORE_UTC_OFFSET_HOURS` | `3` | часовой пояс магазина (Москва) |
+| `STORE_OPEN_HOUR` / `STORE_CLOSE_HOUR` | `8` / `20` | режим работы |
+| `NIGHT_ORDER_START_HOUR` / `NIGHT_ORDER_END_HOUR` | `20` / `8` | окно приоритетных заказов |
+| `STORE_NAME` | `Автодом` | название в шапке |
+| `STORE_PHONE` / `STORE_PHONE_HREF` | `+7 (961) 010-80-01` | телефон и `tel:`-ссылка |
+| `STORE_ADDRESS` | `ул. Высоковольтная, 49, Рязань` | адрес в шапке |
+| `STORE_MAPS_URL` | ссылка на карточку в Яндекс.Картах | кликабельный адрес |
+| `STORE_LAT` / `STORE_LON` | `54.616215` / `39.693777` | координаты |
+| `STORE_RATING` / `STORE_RATING_COUNT` | `4,7` / `147` | рейтинг в шапке |
+| `TELEGRAM_USE_MCP` | `true` | отключить MCP, оставить только Bot API |
+| `TELEGRAM_MCP_COMMAND` / `TELEGRAM_MCP_PACKAGE` | `uvx` / `tgbot-mcp` | запуск MCP-сервера |
+| `TELEGRAM_MCP_TIMEOUT_SECONDS` | `120` | таймаут MCP |
+
+---
+
+## 6. База данных
+
+Проект Neon `orange-darkness-78297388`, ветка `production`
+(`br-royal-leaf-b4wtbe5e`). Схема — `backend/schema.sql`, применяется
+`backend/scripts/apply_schema.py` (идемпотентно).
+
+| Таблица | Ключевые поля |
+|---|---|
+| `products` | `sku`, `name`, `brand`, `category`, `price`, `old_price`, `discount_percent`, `in_stock`, `is_active`, **`is_on_order`**, **`order_days`** |
+| `users` | `email`, `password_hash`, `full_name`, `phone`, `telegram`, `role` |
+| `auth_sessions` | `token`, `user_id`, `expires_at` |
+| `orders` | `order_number`, `user_id`, клиент, авто/VIN, `pickup_method`, `total`, `status`, `is_night_order`, **`has_on_order`** |
+| `order_items` | `order_id`, `product_id`, `product_name`, `price`, `qty`, `line_total`, **`is_on_order`**, **`order_days`** |
+| `order_events` | `order_id`, `status`, `note`, `actor`, `created_at` — таймлайн |
+| `telegram_buttons` | `order_id`, `message_id`, `action`, `label`, `used_at` |
+
+Последовательность `order_num_seq` формирует номер заказа вида `A-YYMMDD-NNNN`
+(например `A-261020-0016`).
+
+> `CREATE TABLE IF NOT EXISTS` не добавляет колонки в уже созданные таблицы —
+> поэтому новые поля приходят отдельными `ALTER TABLE ... ADD COLUMN IF NOT
+> EXISTS` в `schema.sql`.
+
+---
+
+## 7. API
+
+Базовый префикс — `/api`. Полная интерактивная документация:
+**http://127.0.0.1:8000/docs**.
+
+### Публичные
+
+| Метод | Путь | Назначение |
+|---|---|---|
+| GET | `/api/health` | живость API, БД и Telegram |
+| GET | `/api/store` | магазин: имя, телефон, адрес, ссылка на карты, рейтинг, режим работы |
+| GET | `/api/products` | каталог. Фильтры: `?on_order_only=true`, `?in_stock_only=true` |
+| GET | `/api/cars/makes?q=K` | подсказки марок по префиксу |
+| GET | `/api/cars/models?make=KIA&q=ri` | подсказки моделей марки |
+| POST | `/api/orders` | оформить заказ → 201 + номер, итог, канал Telegram |
+
+### Аккаунты
+
+| Метод | Путь | Назначение |
+|---|---|---|
+| POST | `/api/auth/register` | регистрация → `{token, user}` |
+| POST | `/api/auth/login` | вход → `{token, user}` |
+| POST | `/api/auth/logout` | выход (удаляет сессию) |
+| GET | `/api/auth/me` | текущий пользователь |
+
+### Кабинет клиента
+
+| Метод | Путь | Назначение |
+|---|---|---|
+| GET | `/api/cabinet/orders` | заказы клиента с таймлайном |
+| GET | `/api/cabinet/orders/{number}` | один заказ |
+
+### Кабинет владельца
+
+| Метод | Путь | Назначение |
+|---|---|---|
+| GET | `/api/admin/orders` | заказы с фильтрами: `order_status`, `date_from`, `date_to`, `query`, `night_only`, `sort`, `limit` |
+| PATCH | `/api/admin/orders/{id}` | смена статуса + событие в таймлайн |
+| GET | `/api/admin/products` | полный каталог, включая скрытые |
+| POST | `/api/admin/products` | добавить товар |
+| PATCH | `/api/admin/products/{id}` | изменить товар, цену, скидку, наличие, «под заказ» |
+| DELETE | `/api/admin/products/{id}` | скрыть товар (`?restore=true` — восстановить) |
+| GET | `/api/admin/stats` | сводка для дашборда |
+
+### Пример
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/orders \
+  -H "Content-Type: application/json" \
+  -d '{
+    "items": [{"product_id": 6, "qty": 1}],
+    "car_make": "KIA",
+    "car_model": "Rio",
+    "vin": "Z94CB41AAER123456",
+    "pickup_method": "pickup",
+    "customer_name": "Иван",
+    "phone": "+7 900 123-45-67",
+    "telegram": "ivan",
+    "comment": "Позвонить после 18:00"
+  }'
+```
+
+**Правила валидации** (`backend/models.py`)
+
+- `items` — минимум одна позиция, `qty` от 1 до 99;
+- `pickup_method` — только `pickup` (доставки нет);
+- `customer_name` — минимум 2 символа, обязательно;
+- `phone` — обязательно, 10–15 цифр, не одна повторяющаяся цифра;
+- `telegram` — необязательно, без `@`;
+- `vin`, `car_make`, `car_model`, `comment` — необязательные;
+- **цены считает сервер** по каталогу — в запросе их нет.
+
+---
+
+## 8. Telegram-интеграция
+
+`backend/telegram.py` поднимает MCP-сервер `tgbot-mcp` (stdio) и вызывает
+инструмент `send_notification_with_buttons`:
+
+- `event: question`, `icon: 🛒`;
+- `summary` — «Новый заказ A-261020-0016 — Анна Смирнова»;
+- `details` — номер, имя, контакты, авто/VIN, получение, товары, итог,
+  комментарий, время, пометка приоритетного заказа и позиций «под заказ»;
+- `buttons` — «✅ Принял», «📞 Перезвонил», «❌ Отказ».
+
+Токен и chat передаются в MCP **через окружение процесса**
+(`StdioServerParameters.env`) — ключи `--env KEY=VALUE` доезжают не во все
+версии fastmcp.
+
+Резервный путь: если MCP не поднялся или упал — прямой вызов Bot API с тем же
+текстом и клавиатурой. Фактический канал возвращается в ответе API
+(`telegram_delivery`: `tgbot-mcp` | `telegram-bot-api` | `failed: …`).
+
+### Обработка нажатий
+
+Telegram кладёт в `callback_data` только текст кнопки (ограничение
+`tgbot-mcp`), поэтому заказ определяется по `message_id` сообщения:
+
+| Шаг | Действие |
+|---|---|
+| 1 | `message_id` отправленного сообщения сохранён в `telegram_buttons` |
+| 2 | фоновый poller (`_poll_loop`) читает `getUpdates` |
+| 3 | на `callback_query` заказ находится по `message_id` + тексту кнопки |
+| 4 | `orders.status` меняется, в `order_events` пишется событие с актором `manager` |
+| 5 | `answerCallbackQuery` закрывает «часики», в чат уходит подтверждение |
+| 6 | клиент видит новый статус в `/cabinet` (автообновление раз в 30 с) |
+
+| Кнопка | Статус | Подпись в таймлайне |
+|---|---|---|
+| ✅ Принял | `accepted` | Заказ принят менеджером |
+| 📞 Перезвонил | `accepted` | Менеджер перезвонит клиенту |
+| ❌ Отказ | `rejected` | Заказ отклонён менеджером |
+
+Кнопка помечается `used_at` — повторное нажатие игнорируется. Текстовые ответы
+менеджера тоже обрабатываются: если в сообщении есть номер заказа
+(`A-YYMMDD-NNNN`), текст попадает в событие заказа.
+
+> Poller и MCP-сервер работают с одним токеном. Если параллельно вызывать
+> `wait_for_reply` у Hermes-MCP, апдейты может забрать он. Для магазина это не
+> мешает: кнопки обрабатывает бэкенд.
+
+---
+
+## 9. Авторизация и права
+
+| Роль | Доступ |
+|---|---|
+| `customer` | витрина, корзина, оформление заказа, свой кабинет |
+| `owner` | всё выше + `/admin` и `/api/admin/*` |
+
+- Пароли — PBKDF2-HMAC-SHA256, 200 000 итераций, соль на пользователя.
+- Сессия — случайный Bearer-токен в таблице `auth_sessions`, срок 30 дней.
+- `create_session` удаляет только истёкшие сессии — вход на одном устройстве
+  не разлогинивает другое.
+- Клиент, зашедший в `/api/admin/*`, получает 403.
+
+---
+
+## 10. Каталог и оформление заказа
+
+### Справочник авто
+
+`backend/cars.py` — 38 марок с моделями и русскими синонимами. Поиск идёт по
+префиксу, по вхождению и по синониму: «ки» → KIA, «авто» → LADA.
+
+### «Под заказ»
+
+Деталь, которой нет в магазине, но которую можно заказать у поставщика:
+
+- каталог: бейдж `⏳ Под заказ · N дн.`, кнопка «Под заказ», срок в подписи;
+- шаг 2 оформления: та же метка у позиции и пояснение под списком;
+- уведомление менеджеру: `⏳ под заказ (N дн.)` и `⏳ Часть позиций под заказ`;
+- **срок сохраняется снимком в позиции заказа** — поздняя правка каталога не
+  портит историю.
+
+### Приоритетные заказы
+
+`is_night_order` вычисляется по времени магазина (`STORE_UTC_OFFSET_HOURS`) в
+окне 20:00–08:00.
+
+---
+
+## 11. Дизайн-система
+
+| Токен | Значение | Где |
+|---|---|---|
+| Фон | `#F5F5F5` (`bg-gray-50`) | `body` |
+| Карточка | белые, `rounded-2xl`, `shadow-sm` | `.card` |
+| Акцент | `#EA580C` / `#C2410C` / `#9A3412` | `tailwind.config.js` → `accent` |
+| Фокус инпута | `focus:ring-2 focus:ring-orange-500` | `.field` |
+| Бейдж шага | круг, `bg-accent-soft` + `text-accent-strong` | `.step-badge` |
+| Sticky-бар | слева «Итого: X», справа оранжевая кнопка | `CartBar.jsx` |
+| Skeleton | серые пульсирующие блоки | `ProductSkeleton.jsx` |
+
+Mobile-First: одна колонка на телефоне, две на ≥640px. Чтобы sticky-бар не
+перекрывал карточки, у `html` задан `scroll-padding-bottom: 6rem`, а у карточек
+`scroll-mb-28`.
+
+---
+
+## 12. Тесты
+
+```bash
+cd "C:/Users/79156/OneDrive/Desktop/автодом/backend"
+
+./.venv/Scripts/python.exe scripts/test_accounts.py        # 33 проверки
+./.venv/Scripts/python.exe scripts/test_checkout.py        # 31 проверка
+./.venv/Scripts/python.exe scripts/test_on_order.py        # 27 проверок
+./.venv/Scripts/python.exe scripts/test_telegram_buttons.py # 7 проверок
+./.venv/Scripts/python.exe scripts/smoke_test.py           # сквозной API
+./.venv/Scripts/python.exe scripts/test_telegram.py         # оба канала Telegram
+```
+
+Итого **98 проверок**, все проходят.
+
+### Что покрыто
+
+| Набор | Проверки |
+|---|---|
+| `test_accounts` | регистрация, дубли e-mail, вход, неверный пароль, сессия, заказ из сессии, кабинет, права (403), CRUD каталога, скидки, скрытие, статистика, logout |
+| `test_checkout` | подсказки марок и моделей (в т. ч. по-русски), режим магазина, отклонение `111111111` / `1234567890` / пустого телефона, запрет доставки, нормализация данных, фильтры админки (статус, период, поиск, ночные, сортировка), смена статуса |
+| `test_on_order` | детали под заказ на витрине, фильтры каталога, создание и снятие статуса «под заказ», заказ такой детали, запрет заказа недоступной позиции, снимок срока в истории |
+| `test_telegram_buttons` | обработка `callback_query`, смена статуса, идемпотентность повторного нажатия |
+
+### Проверенные прогоны в браузере
+
+- Регистрация → корзина → перезагрузка (корзина сохранилась) → 5 шагов →
+  заказ → кабинет клиента с таймлайном.
+- Кабинет владельца: фильтры, смена статуса, редактирование каталога, скидки,
+  «под заказ» со сроком.
+- Автодополнение марок и моделей, валидация телефона, поиск и фильтры
+  каталога, кликабельные телефон и адрес в шапке.
+
+### Скриншоты — `docs/screenshots/`
+
+| Файл | Что на нём |
+|---|---|
+| `01-storefront-cart.png` | Витрина с товарами в корзине, sticky-бар «Итого» |
+| `02-checkout-step1.png` | Шаг 1 — авто и VIN, индикатор шагов |
+| `03-checkout-step5.png` | Шаг 5 — подтверждение с итогом |
+| `04-catalog-full.png` | Полный каталог |
+| `05-cabinet-client.png` | Кабинет клиента: заказ, статус, таймлайн |
+| `06-admin-orders.png` | Кабинет владельца: заказы и кнопки статусов |
+| `07-admin-catalog.png` | Управление каталогом: цены, скидки, наличие |
+| `08-catalog-on-order.png` | Фильтр «Под заказ» — бейджи со сроком |
+| `09-checkout-car-autocomplete.png` | Шаг 1 — подсказки марок по первым буквам |
+| `10-checkout-items-on-order.png` | Шаг 2 — позиция «под заказ» и пояснение |
+| `11-checkout-pickup-priority.png` | Шаг 3 — самовывоз и приоритет 20:00–08:00 |
+| `12-checkout-contact-validation.png` | Шаг 4 — ошибка валидации телефона |
+| `13-admin-filters.png` | Фильтры кабинета владельца |
+| `14-header-contacts.png` | Шапка: телефон, адрес, рейтинг, режим работы |
+| `15-catalog-filters.png` | Панель фильтров каталога |
+
+---
+
+## 13. Деплой
+
+Схема: **фронтенд → Netlify** (статика), **бэкенд → Render** (Web Service).
+Оба — бесплатные тарифы. Порядок обязателен: бэкенд поднимается первым,
+потому что адрес API вшивается в бандл фронтенда на этапе сборки.
+
+### Автоматически — одним скриптом
+
+```bash
+python scripts/deploy.py
+```
+
+Скрипт выполняет весь цикл: создаёт приватный репозиторий на GitHub →
+запушивает код → создаёт Web Service на Render → ждёт ответа `/api/health` →
+собирает фронтенд с `VITE_API_BASE` → деплоит на Netlify → заменяет
+`CORS_ORIGINS=*` на точный домен Netlify.
+
+Секреты не попадают в аргументы командной строки: `DATABASE_URL`,
+`TELEGRAM_BOT_TOKEN` и `TELEGRAM_CHAT_ID` читаются из `.env.local` и
+`backend/.env.telegram` и уходят в Render по HTTPS API.
+
+Требуется авторизация CLI: `gh auth login`, `netlify login`, `render login`.
+
+### Фронтенд (Netlify)
+
+```bash
+cd frontend
+VITE_API_BASE=https://avtodom-api.onrender.com netlify deploy --prod --dir=dist
+```
+
+**Важно:** `netlify deploy` заново выполняет `[build].command` из
+`netlify.toml`, поэтому `VITE_API_BASE` должна быть в окружении **самого
+deploy** — иначе Netlify пересоберёт бандл без адреса API и зальёт битый
+билд. Сайт указывается по ID (`netlify link --id <site_id>`), а не по имени:
+поиск по имени в этом CLI не работает.
+
+Конфиг `frontend/netlify.toml` содержит SPA-редирект (`/cabinet`, `/admin` →
+`/index.html`), кэш ассетов на год и заголовки безопасности.
+
+### Бэкенд (Render)
+
+| Параметр | Значение |
+|---|---|
+| Root Directory | `backend` |
+| Build Command | `pip install -r requirements.txt` |
+| Start Command | `uvicorn main:app --host 0.0.0.0 --port $PORT` |
+| Health Check Path | `/api/health` |
+| Plan | `free` |
+
+Переменные окружения:
+
+```
+DATABASE_URL=postgresql://...        # pooled-строка Neon из .env.local
+TELEGRAM_BOT_TOKEN=...
+TELEGRAM_CHAT_ID=...
+CORS_ORIGINS=https://ваш-фронтенд.домен
+TELEGRAM_USE_MCP=false               # на Render нет uvx — работает Bot API
+```
+
+Render собирает **из подключённого git-репозитория** — режима «задеплоить
+локальную папку» нет, поэтому аккаунт GitHub обязателен.
+
+Бесплатный тариф засыпает после 15 минут без запросов: первый запуск после
+паузы поднимается 1–2 минуты.
+
+### Чек-лист перед деплоем
+
+- [ ] `DATABASE_URL` указывает на pooled-эндпоинт Neon
+- [ ] Схема применена (`apply_schema.py` отработал без ошибок)
+- [ ] `CORS_ORIGINS` содержит домен фронтенда
+- [ ] `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` заданы в окружении хостинга
+- [ ] `npm run build` проходит без ошибок
+- [ ] `GET /api/health` возвращает `{"status":"ok","database":"ok"}`
+- [ ] Пароль владельца сменён (`create_owner.py --rotate`)
+- [ ] `backend/.env.telegram` и `.env.local` не попадают в репозиторий
+
+---
+
+## 14. Решение проблем
+
+| Симптом | Причина | Что делать |
+|---|---|---|
+| Порт 8000 занят, бэкенд не стартует | старый экземпляр uvicorn | `start-backend.bat` освобождает порт сам; вручную — `netstat -ano \| grep :8000` → `taskkill /F /PID <pid>` |
+| Порт 5173 занят | старый dev-сервер Vite | `start-frontend.bat` или `stop-all.bat` |
+| `RuntimeError: TELEGRAM_CHAT_ID is not set` | токен/чат не переданы в MCP | `backend/scripts/sync_telegram_env.py` |
+| `database: error` в health | нет связи с Neon | проверьте `DATABASE_URL` и pooled-эндпоинт |
+| Уведомление не пришло, `telegram_delivery: failed: …` | неверный токен или чат | проверьте токен у @BotFather и `TELEGRAM_CHAT_ID` |
+| `telegram_delivery: telegram-bot-api` вместо `tgbot-mcp` | MCP недоступен, сработал резерв | на Render `uvx` нет — это норма, работает Bot API |
+| Кнопки в Telegram не работают | poller не видит callback | проверьте, что backend запущен; в логах должно быть `Telegram poller запущен` |
+| Сайт на Netlify отдаёт 401 и редирект на `app.netlify.com/edge-access` | на аккаунте включён SSO (Edge Access) | `PATCH /api/v1/sites/<id>` с `{"sso_login": false}` — глобально снять нельзя, на уровне сайта можно |
+| `Failed retrieving site data for site <name>: Not Found` | `netlify deploy --site` ищет по имени | используйте ID: `netlify link --id <site_id>` |
+| На сайте API отдаёт 404, а в бандле нет адреса | `netlify deploy` пересобрал бандл без `VITE_API_BASE` | передайте переменную в окружение deploy, а не только в `npm run build` |
+| `ImportError: attempted relative import with no known parent package` | на Render `main.py` импортируется как top-level | обёрните относительные импорты в try/except (dual-mode) |
+| CORS-ошибка в браузере, но curl работает | `allow_origins=["*"]` вместе с `allow_credentials=True` | при `*` в списке origin выставляйте `allow_credentials=False` |
+| В консоли браузера 404 на `/favicon.ico` | устаревший кеш | обновить страницу с очисткой кеша |
+| `npm install` ругается на `esbuild` | не разрешён postinstall-скрипт | `npm approve-scripts` — на сборку не влияет |
+| `apply_schema.py` не добавляет колонку | `CREATE TABLE IF NOT EXISTS` игнорирует новые поля | в `schema.sql` нужен `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` |
+| Ошибка asyncpg вида `invalid input for query argument $1` | в параметр ушла строка вместо `date` | передавать объект `datetime.date`, а не строку |
+
+---
+
+## Лицензия и данные
+
+Данные магазина (телефон, адрес, рейтинг, координаты) взяты из карточки
+**«Автодом»** в Яндекс.Картах и хранятся в `backend/settings.py` — меняются
+переменными окружения, без правки кода.
