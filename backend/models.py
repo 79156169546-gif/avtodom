@@ -272,6 +272,9 @@ class OrderOut(BaseModel):
     has_on_order: bool = False
     status: str
     status_label: str
+    # Момент выполнения заказа. По нему начисляется выручка:
+    # пока заказ не completed, его сумма в выручку не входит.
+    completed_at: datetime | None = None
     created_at: datetime
     updated_at: datetime
     customer_name: str

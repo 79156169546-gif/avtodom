@@ -31,7 +31,7 @@ from fastapi import Depends, FastAPI, HTTPException, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 
 try:  # пакетный импорт (uvicorn backend.main:app)
-    from . import auth, cars, db, settings
+    from . import auth, cars, db, order_status, settings
     from . import vin as vin_parser
     from .models import (
         ORDER_STATUS_LABELS,
@@ -53,6 +53,7 @@ try:  # пакетный импорт (uvicorn backend.main:app)
 except ImportError:  # запуск как top-level модуль (uvicorn main:app, root dir = backend)
     import auth  # type: ignore[no-redef]
     import cars  # type: ignore[no-redef]
+    import order_status  # type: ignore[no-redef]
     import vin as vin_parser  # type: ignore[no-redef]
     import db  # type: ignore[no-redef]
     import settings  # type: ignore[no-redef]
@@ -259,6 +260,7 @@ async def _build_order_out(
         has_on_order=row.get("has_on_order", False),
         status=row["status"],
         status_label=_status_label(row["status"]),
+        completed_at=row.get("completed_at"),
         created_at=row["created_at"],
         updated_at=row["updated_at"],
         customer_name=row["customer_name"],
@@ -685,8 +687,8 @@ async def create_order(
                 )
                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,'new',$15)
                 RETURNING id, order_number, total, pickup_method,
-                              is_night_order, has_on_order, status, created_at,
-                              updated_at, customer_name, phone, telegram,
+                              is_night_order, has_on_order, status, completed_at,
+                              created_at, updated_at, customer_name, phone, telegram,
                               car_make, car_model, vin, address, comment
                 """,
                 order_number,
@@ -785,7 +787,8 @@ async def get_order(
         """
         SELECT id, order_number, user_id, customer_name, phone, telegram,
                car_make, car_model, vin, pickup_method, address, comment,
-               total, is_night_order, has_on_order, status, created_at, updated_at
+               total, is_night_order, has_on_order, status, completed_at,
+               created_at, updated_at
         FROM orders WHERE order_number = $1
         """,
         order_number,
@@ -821,7 +824,7 @@ async def my_orders(user: dict = Depends(auth.current_user)) -> list[OrderOut]:
     rows = await db.fetch(
         """
         SELECT id, order_number, total, pickup_method, is_night_order,
-               has_on_order, status,
+               has_on_order, status, completed_at,
                created_at, updated_at, customer_name, phone, telegram,
                car_make, car_model, vin, address, comment
         FROM orders
@@ -849,6 +852,60 @@ async def my_orders(user: dict = Depends(auth.current_user)) -> list[OrderOut]:
     ]
 
 
+@app.get("/api/orders/{order_number}/telegram-link")
+async def order_telegram_link(
+    order_number: str,
+    user: dict | None = Depends(auth.current_user_optional),
+) -> dict[str, object]:
+    """Ссылка для подписки клиента на уведомления о заказе.
+
+    Клиент открывает t.me/<bot>?start=<номер заказа> — бот запоминает его
+    chat_id и дальше присылает сообщения о смене статуса.
+
+    Доступ: владелец заказа, заказ по номеру с телефоном или любой
+    авторизованный пользователь с совпадающим telegram.
+    """
+    row = await db.fetchrow(
+        """
+        SELECT id, order_number, user_id, customer_name, phone, telegram,
+               telegram_chat_id
+        FROM orders WHERE order_number = $1
+        """,
+        order_number,
+    )
+    if row is None:
+        raise HTTPException(status_code=404, detail="Заказ не найден")
+
+    is_owner = user is not None and user["role"] == "owner"
+    is_owner_of_order = (
+        user is not None
+        and row["user_id"] is not None
+        and row["user_id"] == user["id"]
+    )
+    phone_matches = bool(user) and (
+        (user.get("phone") or "").strip() == (row["phone"] or "").strip()
+        and (row["phone"] or "").strip() != ""
+    )
+    if not (is_owner or is_owner_of_order or phone_matches):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Нужен вход или телефон клиента из этого заказа",
+        )
+
+    bot_username = settings.TELEGRAM_BOT_USERNAME
+    link = (
+        f"https://t.me/{bot_username}?start={order_number}"
+        if bot_username
+        else ""
+    )
+    return {
+        "order_number": order_number,
+        "bot_username": bot_username,
+        "link": link,
+        "subscribed": row["telegram_chat_id"] is not None,
+    }
+
+
 @app.get("/api/cabinet/orders/{order_number}", response_model=OrderOut)
 async def my_order(
     order_number: str, user: dict = Depends(auth.current_user)
@@ -857,7 +914,7 @@ async def my_order(
     row = await db.fetchrow(
         """
         SELECT id, order_number, total, pickup_method, is_night_order,
-               has_on_order, status,
+               has_on_order, status, completed_at,
                created_at, updated_at, customer_name, phone, telegram,
                car_make, car_model, vin, address, comment
         FROM orders
@@ -938,7 +995,7 @@ async def admin_orders(
     rows = await db.fetch(
         f"""
         SELECT id, order_number, total, pickup_method, is_night_order,
-               has_on_order, status,
+               has_on_order, status, completed_at,
                created_at, updated_at, customer_name, phone, telegram,
                car_make, car_model, vin, address, comment
         FROM orders {where}
@@ -983,26 +1040,20 @@ async def admin_update_order(
     pool = await db.get_pool()
     async with pool.acquire() as conn:
         async with conn.transaction():
-            await conn.execute(
-                "UPDATE orders SET status = $1, updated_at = now() WHERE id = $2",
-                payload.status,
-                order_id,
-            )
-            await conn.execute(
-                """
-                INSERT INTO order_events (order_id, status, note, actor)
-                VALUES ($1, $2, $3, 'manager')
-                """,
+            await order_status.apply_order_status(
+                conn,
                 order_id,
                 payload.status,
-                payload.note or f"Статус изменён на «{_status_label(payload.status)}»",
+                note=payload.note,
+                status_label=_status_label(payload.status),
             )
 
     updated = await db.fetchrow(
         """
         SELECT id, order_number, total, pickup_method, is_night_order,
-               has_on_order, status,
+               has_on_order, status, completed_at,
                created_at, updated_at, customer_name, phone, telegram,
+               telegram_chat_id,
                car_make, car_model, vin, address, comment
         FROM orders WHERE id = $1
         """,
@@ -1010,6 +1061,15 @@ async def admin_update_order(
     )
     logger.info(
         "Статус заказа %s изменён на %s", updated["order_number"], payload.status
+    )
+    # Клиенту сообщаем о смене статуса — по подписке в Telegram.
+    await notifier.notify_client_status(
+        order_number=updated["order_number"],
+        status=payload.status,
+        chat_id=updated.get("telegram_chat_id"),
+        telegram_username=updated.get("telegram"),
+        address=updated.get("address"),
+        phone=updated.get("phone"),
     )
     return await _build_order_out(updated, telegram_sent=True, delivery="stored")
 
@@ -1224,20 +1284,31 @@ async def admin_stats(user: dict = Depends(auth.current_owner)) -> dict[str, obj
             (SELECT count(*) FROM orders WHERE status = 'new') AS orders_new,
             (SELECT count(*) FROM orders WHERE created_at::date = current_date)
                 AS orders_today,
-            -- Выручка — по заказам, которые не отклонены и не отменены.
-            -- Отклонённый заказ денег не приносит, поэтому сумма должна
-            -- уменьшаться сразу после смены статуса.
+            -- Выручка — только по выполненным заказам. Заказ пришёл, но ещё
+            -- в работе (new/accepted/in_progress/ready) — деньги не получены,
+            -- поэтому в выручку не входит. Статус completed — сумма добавилась.
+            -- «Сегодня» считается по часовому поясу магазина, а не по UTC.
             (SELECT COALESCE(sum(total), 0) FROM orders
-                WHERE status NOT IN ('rejected', 'cancelled')) AS revenue_total,
+                WHERE status = 'completed') AS revenue_total,
             (SELECT COALESCE(sum(total), 0) FROM orders
-                WHERE created_at::date = current_date
-                    AND status NOT IN ('rejected', 'cancelled')) AS revenue_today,
+                WHERE status = 'completed'
+                    AND (completed_at + make_interval(hours => $1))::date
+                        = (now() + make_interval(hours => $1))::date
+                ) AS revenue_today,
+            -- В работе: заказы, которые ещё не выданы и не отменены.
+            -- Показывает, сколько денег пока не получено.
+            (SELECT COALESCE(sum(total), 0) FROM orders
+                WHERE status IN ('new', 'accepted', 'in_progress', 'ready')
+                ) AS revenue_pending,
+            (SELECT count(*) FROM orders WHERE status = 'completed')
+                AS orders_completed,
             (SELECT count(*) FROM products WHERE is_active) AS products_active,
             (SELECT count(*) FROM products WHERE NOT is_active) AS products_hidden,
             (SELECT count(*) FROM products WHERE in_stock AND is_active)
                 AS products_in_stock,
             (SELECT count(*) FROM users WHERE role = 'customer') AS customers
-        """
+        """,
+        settings.STORE_UTC_OFFSET_HOURS,
     )
     by_status = await db.fetch(
         "SELECT status, count(*) AS cnt FROM orders GROUP BY status"

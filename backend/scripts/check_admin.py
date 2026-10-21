@@ -170,6 +170,7 @@ console.log('ОШИБКИ КОНСОЛИ: ' + JSON.stringify(errors));
 check('метрика «Новых» есть', await page.locator('[data-testid="stat-orders-new"]').count(), 1);
 check('метрика «Заказов всего» есть', await page.locator('[data-testid="stat-orders-total"]').count(), 1);
 check('метрика «Выручка» есть', await page.locator('[data-testid="stat-revenue"]').count(), 1);
+check('метрика «В работе» есть', await page.locator('[data-testid="stat-revenue-pending"]').count(), 1);
 check('метрика «Товаров» есть', await page.locator('[data-testid="stat-products"]').count(), 1);
 
 const beforeNew = await orders().count();
@@ -267,8 +268,9 @@ const statusAfter = await page.evaluate(async (num) => {{
 }}, targetOrder);
 check('статус изменился на сервере', statusAfter === 'accepted', true);
 
-// Выручка за сегодня должна уменьшаться, когда заказ отклоняют:
-// отклонённый заказ денег не приносит.
+// Выручка начисляется только по выполненным заказам:
+// заказ в работе (accepted/ready) в выручку не входит,
+// сумма добавляется в момент перехода в completed.
 const revenueBefore = await page.evaluate(async () => {{
   const token = localStorage.getItem('autodom.token');
   const resp = await fetch('/api/admin/stats', {{
@@ -276,10 +278,11 @@ const revenueBefore = await page.evaluate(async () => {{
   }});
   const data = await resp.json();
   return {{ today: Number(data.totals.revenue_today),
-           total: Number(data.totals.revenue_total) }};
+           total: Number(data.totals.revenue_total),
+           pending: Number(data.totals.revenue_pending) }};
 }});
 
-const orderToReject = await page.evaluate(async () => {{
+const orderToComplete = await page.evaluate(async () => {{
   const token = localStorage.getItem('autodom.token');
   const resp = await fetch('/api/admin/orders?order_status=accepted&limit=1', {{
     headers: {{ Authorization: 'Bearer ' + token }},
@@ -289,19 +292,20 @@ const orderToReject = await page.evaluate(async () => {{
   return {{ id: list[0].id, number: list[0].order_number, total: Number(list[0].total) }};
 }});
 
-if (orderToReject) {{
+if (orderToComplete) {{
+  // Статус ready — заказ ещё не выдан, выручка не меняется.
   await page.evaluate(async (info) => {{
     const token = localStorage.getItem('autodom.token');
     await fetch('/api/admin/orders/' + info.id, {{
       method: 'PATCH',
       headers: {{ 'Content-Type': 'application/json',
                  Authorization: 'Bearer ' + token }},
-      body: JSON.stringify({{ status: 'rejected' }}),
+      body: JSON.stringify({{ status: 'ready' }}),
     }});
-  }}, orderToReject);
+  }}, orderToComplete);
   await wait(1200);
 
-  const revenueAfter = await page.evaluate(async () => {{
+  const revenueReady = await page.evaluate(async () => {{
     const token = localStorage.getItem('autodom.token');
     const resp = await fetch('/api/admin/stats', {{
       headers: {{ Authorization: 'Bearer ' + token }},
@@ -311,12 +315,42 @@ if (orderToReject) {{
              total: Number(data.totals.revenue_total) }};
   }});
 
-  check('отклонение уменьшает выручку за сегодня',
-    Math.abs((revenueBefore.today - revenueAfter.today) - orderToReject.total) < 0.01, true);
-  check('отклонение уменьшает общую выручку',
-    Math.abs((revenueBefore.total - revenueAfter.total) - orderToReject.total) < 0.01, true);
+  check('статус «Готов» не увеличивает выручку',
+    Math.abs(revenueReady.total - revenueBefore.total) < 0.01, true);
+  check('статус «Готов» не увеличивает выручку за сегодня',
+    Math.abs(revenueReady.today - revenueBefore.today) < 0.01, true);
 
-  // Возвращаем заказ в исходный статус.
+  // Статус completed — заказ выполнен, выручка выросла на сумму заказа.
+  await page.evaluate(async (info) => {{
+    const token = localStorage.getItem('autodom.token');
+    await fetch('/api/admin/orders/' + info.id, {{
+      method: 'PATCH',
+      headers: {{ 'Content-Type': 'application/json',
+                 Authorization: 'Bearer ' + token }},
+      body: JSON.stringify({{ status: 'completed' }}),
+    }});
+  }}, orderToComplete);
+  await wait(1200);
+
+  const revenueCompleted = await page.evaluate(async () => {{
+    const token = localStorage.getItem('autodom.token');
+    const resp = await fetch('/api/admin/stats', {{
+      headers: {{ Authorization: 'Bearer ' + token }},
+    }});
+    const data = await resp.json();
+    return {{ today: Number(data.totals.revenue_today),
+             total: Number(data.totals.revenue_total),
+             pending: Number(data.totals.revenue_pending) }};
+  }});
+
+  check('выполнение заказа увеличивает общую выручку на его сумму',
+    Math.abs((revenueCompleted.total - revenueBefore.total) - orderToComplete.total) < 0.01, true);
+  check('выполнение заказа увеличивает выручку за сегодня',
+    Math.abs((revenueCompleted.today - revenueBefore.today) - orderToComplete.total) < 0.01, true);
+  check('выполненный заказ уходит из суммы «В работе»',
+    Math.abs((revenueBefore.pending - revenueCompleted.pending) - orderToComplete.total) < 0.01, true);
+
+  // Возвращаем статус — выручка должна вернуться.
   await page.evaluate(async (info) => {{
     const token = localStorage.getItem('autodom.token');
     await fetch('/api/admin/orders/' + info.id, {{
@@ -325,7 +359,7 @@ if (orderToReject) {{
                  Authorization: 'Bearer ' + token }},
       body: JSON.stringify({{ status: 'accepted' }}),
     }});
-  }}, orderToReject);
+  }}, orderToComplete);
   await wait(1200);
 
   const revenueRestored = await page.evaluate(async () => {{
@@ -339,6 +373,8 @@ if (orderToReject) {{
   }});
   check('возврат статуса восстанавливает выручку',
     Math.abs(revenueRestored.today - revenueBefore.today) < 0.01, true);
+  check('возврат статуса восстанавливает общую выручку',
+    Math.abs(revenueRestored.total - revenueBefore.total) < 0.01, true);
 }} else {{
   check('нашёлся заказ для проверки выручки', false, true);
 }}

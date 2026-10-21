@@ -64,6 +64,8 @@ def _get_bool(key: str, default: bool = False) -> bool:
 DATABASE_URL: str = _get("DATABASE_URL")
 TELEGRAM_BOT_TOKEN: str = _get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID: str = _get("TELEGRAM_CHAT_ID")
+# Username бота без @ — нужен для ссылки-подписки t.me/<bot>?start=<заказ>.
+TELEGRAM_BOT_USERNAME: str = _get("TELEGRAM_BOT_USERNAME", "avtodomrzn_bot").lstrip("@")
 
 # Разрешённые origins фронтенда (dev-сервер Vite).
 CORS_ORIGINS: list[str] = [

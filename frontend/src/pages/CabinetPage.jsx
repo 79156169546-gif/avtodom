@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { fetchMyOrders } from '../api.js'
+import { fetchMyOrders, fetchOrderTelegramLink } from '../api.js'
 import { formatPrice, statusMeta } from '../lib/format.js'
 
 // Компонент таймлайна статусов заказа
@@ -59,12 +59,35 @@ export default function CabinetPage() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [expanded, setExpanded] = useState(null)
+  // Ссылка-подписка на уведомления в Telegram для каждого заказа.
+  const [telegramLinks, setTelegramLinks] = useState({})
 
   const load = useCallback(async () => {
     setLoading(true)
     setError('')
     try {
-      setOrders(await fetchMyOrders())
+      const list = await fetchMyOrders()
+      setOrders(list)
+      // Подписка нужна только для активных заказов — по завершённым
+      // уведомления уже не приходят.
+      const active = list.filter(
+        (order) => order.status !== 'completed'
+          && order.status !== 'rejected'
+          && order.status !== 'cancelled',
+      )
+      const pairs = await Promise.all(
+        active.map(async (order) => {
+          try {
+            const link = await fetchOrderTelegramLink(order.order_number)
+            return [order.order_number, link]
+          } catch {
+            return null
+          }
+        }),
+      )
+      setTelegramLinks(
+        Object.fromEntries(pairs.filter(Boolean)),
+      )
     } catch (err) {
       setError(err.message || 'Не удалось загрузить заказы')
     } finally {
@@ -160,6 +183,27 @@ export default function CabinetPage() {
               </button>
 
               <Timeline order={order} />
+
+              {telegramLinks[order.order_number]?.link &&
+              !telegramLinks[order.order_number]?.subscribed ? (
+                <a
+                  href={telegramLinks[order.order_number].link}
+                  target="_blank"
+                  rel="noreferrer"
+                  data-testid="telegram-subscribe"
+                  className="mt-3 block rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-center text-sm font-medium text-blue-700 hover:bg-blue-100"
+                >
+                  Получать уведомления в Telegram
+                </a>
+              ) : null}
+              {telegramLinks[order.order_number]?.subscribed ? (
+                <p
+                  data-testid="telegram-subscribed"
+                  className="mt-3 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-center text-sm text-emerald-700"
+                >
+                  Уведомления о заказе включены
+                </p>
+              ) : null}
 
               {isOpen ? (
                 <div className="mt-3 space-y-2 border-t border-gray-100 pt-3">

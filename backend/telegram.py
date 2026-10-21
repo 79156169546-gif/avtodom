@@ -29,9 +29,10 @@ from typing import Any
 import httpx
 
 try:  # пакетный импорт
-    from . import db, settings
+    from . import db, order_status, settings
 except ImportError:  # запуск как top-level модуль (uvicorn main:app)
     import db  # type: ignore[no-redef]
+    import order_status  # type: ignore[no-redef]
     import settings  # type: ignore[no-redef]
 
 logger = logging.getLogger(__name__)
@@ -47,6 +48,47 @@ BUTTON_ACTIONS: dict[str, tuple[str, str]] = {
     BUTTON_CALLBACK: ("accepted", "Менеджер перезвонит клиенту"),
     BUTTON_REJECT: ("rejected", "Заказ отклонён менеджером"),
 }
+
+# Уведомления клиенту о статусе заказа. Ключ — статус, значение — текст.
+# {order_number} подставляется при отправке.
+CLIENT_STATUS_TEXTS: dict[str, str] = {
+    "accepted": (
+        "✅ Заказ {order_number} принят в работу!\n\n"
+        "Мы уже начали его собирать. Сообщим, когда можно будет забрать."
+    ),
+    "in_progress": (
+        "🔧 Заказ {order_number} — в работе.\n\n"
+        "Собираем детали по вашему заказу."
+    ),
+    "ready": (
+        "📦 Заказ {order_number} готов к выдаче!\n\n"
+        "Ждём вас по адресу: {address}\n"
+        "Режим работы: {hours}. Приятной покупки!"
+    ),
+    "completed": (
+        "🎉 Заказ {order_number} выдан.\n\n"
+        "Спасибо за покупку! Будем рады видеть вас снова."
+    ),
+    "rejected": (
+        "❌ Заказ {order_number} отклонён.\n\n"
+        "Если есть вопросы — позвоните нам: {phone}"
+    ),
+    "cancelled": (
+        "Заказ {order_number} отменён.\n\n"
+        "Если есть вопросы — позвоните нам: {phone}"
+    ),
+}
+
+# Статусы, о которых клиенту сообщаем. «Новый» — это и так новость,
+# о которой клиент знает: он сам только что оформил заказ.
+CLIENT_NOTIFY_STATUSES = (
+    "accepted",
+    "in_progress",
+    "ready",
+    "completed",
+    "rejected",
+    "cancelled",
+)
 
 ORDER_NUMBER_RE = re.compile(r"A-\d{6}-\d{4}")
 MESSAGE_ID_RE = re.compile(r"message_id=(\d+)")
@@ -445,7 +487,8 @@ class TelegramNotifier:
         if message_id is not None:
             order = await db.fetchrow(
                 """
-                SELECT o.id, o.order_number, o.status, o.customer_name
+                SELECT o.id, o.order_number, o.status, o.customer_name,
+                       o.telegram, o.telegram_chat_id, o.address, o.phone
                 FROM telegram_buttons b
                 JOIN orders o ON o.id = b.order_id
                 WHERE b.message_id = $1 AND b.label = $2 AND b.used_at IS NULL
@@ -463,19 +506,20 @@ class TelegramNotifier:
         status, note = BUTTON_ACTIONS.get(
             data, ("accepted", f"Менеджер нажал «{data}»")
         )
-        await db.execute(
-            "UPDATE orders SET status = $1, updated_at = now() WHERE id = $2",
-            status,
+        await order_status.apply_order_status(
+            db,
             order["id"],
+            status,
+            note=note,
         )
-        await db.execute(
-            """
-            INSERT INTO order_events (order_id, status, note, actor)
-            VALUES ($1, $2, $3, 'manager')
-            """,
-            order["id"],
-            status,
-            note,
+        # Клиенту тоже сообщаем о смене статуса.
+        await self.notify_client_status(
+            order_number=order["order_number"],
+            status=status,
+            chat_id=order.get("telegram_chat_id"),
+            telegram_username=order.get("telegram"),
+            address=order.get("address"),
+            phone=order.get("phone"),
         )
         await db.execute(
             "UPDATE telegram_buttons SET used_at = now() WHERE order_id = $1",
@@ -489,11 +533,97 @@ class TelegramNotifier:
             "Нажата кнопка «%s» по заказу %s", data, order["order_number"]
         )
 
+    async def _handle_start(self, message: dict, text: str) -> None:
+        """Клиент нажал «Старт» в боте.
+
+        Если передан номер заказа (/start A-261021-0061) — запоминаем чат
+        клиента и привязываем к заказу, чтобы присылать уведомления о
+        статусе. Если номера нет — просто запоминаем чат: клиент мог
+        указать свой Telegram в форме заказа, и мы найдём его по username.
+        """
+        chat = message.get("chat") or {}
+        chat_id = chat.get("id")
+        if chat_id is None:
+            return
+
+        user = message.get("from") or {}
+        username = (user.get("username") or "").strip().lstrip("@") or None
+
+        match = ORDER_NUMBER_RE.search(text)
+        order_number = match.group(0) if match else None
+
+        await db.execute(
+            """
+            INSERT INTO telegram_chats (chat_id, username, order_number)
+            VALUES ($1, $2, $3)
+            ON CONFLICT (chat_id) DO UPDATE
+            SET username = COALESCE(EXCLUDED.username, telegram_chats.username),
+                order_number = COALESCE(
+                    EXCLUDED.order_number, telegram_chats.order_number
+                ),
+                updated_at = now()
+            """,
+            chat_id,
+            username,
+            order_number,
+        )
+
+        if order_number:
+            await db.execute(
+                """
+                UPDATE orders
+                SET telegram_chat_id = $1, updated_at = now()
+                WHERE order_number = $2
+                """,
+                chat_id,
+                order_number,
+            )
+            logger.info(
+                "Клиент %s подписался на уведомления по заказу %s",
+                username or chat_id,
+                order_number,
+            )
+            await self._send_to_chat(
+                chat_id,
+                f"✅ Вы подписались на уведомления по заказу "
+                f"{order_number}.\n\nСообщим, когда заказ будет готов.",
+            )
+            return
+
+        await self._send_to_chat(
+            chat_id,
+            "👋 Это бот магазина «Автодом».\n\n"
+            "Чтобы получать уведомления о заказе, отправьте сюда его номер "
+            "— например A-261021-0061.",
+        )
+
+    async def _send_to_chat(self, chat_id: int, text: str) -> None:
+        """Отправить сообщение в конкретный чат (клиенту)."""
+        try:
+            async with httpx.AsyncClient(timeout=20.0) as client:
+                response = await client.post(
+                    _telegram_api("sendMessage"),
+                    json={"chat_id": chat_id, "text": text},
+                )
+                response.raise_for_status()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "Не удалось отправить сообщение в чат %s: %s",
+                chat_id,
+                _mask_token(str(exc)),
+            )
+
     async def _handle_text(self, message: dict) -> None:
-        """Текстовый ответ менеджера: привязываем к заказу, если есть номер."""
+        """Входящее сообщение: подписка клиента или комментарий менеджера."""
         text = (message.get("text") or "").strip()
         if not text:
             return
+
+        # Подписка клиента: /start или /start A-261021-0061.
+        if text.startswith("/start"):
+            await self._handle_start(message, text)
+            return
+
         match = ORDER_NUMBER_RE.search(text)
         if not match:
             return
@@ -527,6 +657,97 @@ class TelegramNotifier:
                 )
         except Exception as exc:  # noqa: BLE001
             logger.debug("answerCallbackQuery не удался: %s", exc)
+
+    async def notify_client_status(
+        self,
+        *,
+        order_number: str,
+        status: str,
+        chat_id: int | None = None,
+        telegram_username: str | None = None,
+        address: str | None = None,
+        phone: str | None = None,
+    ) -> bool:
+        """Сообщить клиенту о смене статуса его заказа.
+
+        Бот может написать клиенту только если клиент сам начал диалог
+        (Telegram не даёт писать тем, кто бота не активировал). Поэтому
+        chat_id ищем: сперва в заказе, затем по username в telegram_chats.
+
+        Возвращает True, если сообщение ушло.
+        """
+        if status not in CLIENT_NOTIFY_STATUSES:
+            return False
+
+        template = CLIENT_STATUS_TEXTS.get(status)
+        if not template:
+            return False
+
+        target_chat = chat_id
+        if target_chat is None and telegram_username:
+            target_chat = await self._find_chat_by_username(telegram_username)
+        if target_chat is None:
+            logger.info(
+                "Нет chat_id для клиента заказа %s — уведомление «%s» пропущено",
+                order_number,
+                status,
+            )
+            return False
+
+        store_hours = f"{settings.STORE_OPEN_HOUR}:00–{settings.STORE_CLOSE_HOUR}:00"
+        text = template.format(
+            order_number=order_number,
+            address=address or settings.STORE_ADDRESS,
+            phone=phone or settings.STORE_PHONE,
+            hours=store_hours,
+        )
+
+        try:
+            async with httpx.AsyncClient(timeout=20.0) as client:
+                response = await client.post(
+                    _telegram_api("sendMessage"),
+                    json={
+                        "chat_id": target_chat,
+                        "text": text,
+                        "parse_mode": "Markdown",
+                    },
+                )
+                response.raise_for_status()
+                data = response.json()
+            if not data.get("ok"):
+                raise RuntimeError(data.get("description", "unknown Telegram error"))
+            logger.info(
+                "Клиенту заказа %s отправлено уведомление «%s»",
+                order_number,
+                status,
+            )
+            return True
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "Не удалось уведомить клиента заказа %s: %s",
+                order_number,
+                _mask_token(str(exc)),
+            )
+            return False
+
+    async def _find_chat_by_username(self, username: str) -> int | None:
+        """Найти chat_id клиента по username, если он уже писал боту."""
+        clean = (username or "").strip().lstrip("@")
+        if not clean:
+            return None
+        try:
+            row = await db.fetchrow(
+                """
+                SELECT chat_id FROM telegram_chats
+                WHERE lower(username) = lower($1)
+                LIMIT 1
+                """,
+                clean,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Не удалось найти chat клиента: %s", exc)
+            return None
+        return int(row["chat_id"]) if row else None
 
     async def _send_text(self, text: str) -> None:
         try:

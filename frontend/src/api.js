@@ -136,6 +136,11 @@ export function fetchMyOrder(orderNumber) {
   return request(`/api/cabinet/orders/${orderNumber}`)
 }
 
+// Ссылка-подписка на уведомления о заказе в Telegram.
+export function fetchOrderTelegramLink(orderNumber) {
+  return request(`/api/orders/${orderNumber}/telegram-link`)
+}
+
 // --- кабинет владельца -----------------------------------------------------
 
 export function fetchAdminOrders(filters = {}) {

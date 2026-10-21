@@ -5,6 +5,7 @@ import {
   fetchCarModels,
   fetchCarVin,
   fetchHealth,
+  fetchOrderTelegramLink,
   fetchProducts,
   fetchStoreInfo,
   submitOrder,
@@ -64,6 +65,8 @@ export default function StorefrontPage() {
   const [submitting, setSubmitting] = useState(false)
   const [submitError, setSubmitError] = useState('')
   const [success, setSuccess] = useState(null)
+  // Ссылка-подписка на уведомления в Telegram для свежего заказа.
+  const [telegramLink, setTelegramLink] = useState(null)
   const [health, setHealth] = useState(null)
   const [store, setStore] = useState(null)
 
@@ -479,6 +482,17 @@ export default function StorefrontPage() {
                   Войти, чтобы отслеживать заказ
                 </button>
               )}
+              {telegramLink?.link ? (
+                <a
+                  href={telegramLink.link}
+                  target="_blank"
+                  rel="noreferrer"
+                  data-testid="telegram-subscribe"
+                  className="btn-secondary"
+                >
+                  Получать уведомления в Telegram
+                </a>
+              ) : null}
             </div>
           </div>
         ) : null}

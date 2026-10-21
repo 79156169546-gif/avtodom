@@ -103,6 +103,34 @@ CREATE INDEX IF NOT EXISTS idx_orders_user_id ON orders(user_id);
 -- новых колонок в существующих таблицах не добавляет).
 ALTER TABLE orders ADD COLUMN IF NOT EXISTS has_on_order BOOLEAN NOT NULL DEFAULT FALSE;
 
+-- Момент выполнения заказа. Выручка начисляется только по выполненным:
+-- пока заказ в работе (new/accepted/in_progress/ready), в выручку не входит.
+-- completed_at обнуляется, если статус ушёл из completed, и сохраняет
+-- время первого перехода в completed при повторных правках.
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS completed_at TIMESTAMPTZ;
+
+-- Chat ID клиента в Telegram. Заполняется, когда клиент подписался на
+-- уведомления по ссылке t.me/<bot>?start=<номер заказа>.
+ALTER TABLE orders ADD COLUMN IF NOT EXISTS telegram_chat_id BIGINT;
+
+CREATE INDEX IF NOT EXISTS idx_orders_completed_at ON orders(completed_at DESC);
+
+-- Подписки клиентов на уведомления: chat_id <-> заказ.
+-- По chat_id бот умеет писать клиенту, по username — ищет чат, если клиент
+-- уже писал боту раньше.
+CREATE TABLE IF NOT EXISTS telegram_chats (
+    chat_id      BIGINT PRIMARY KEY,
+    username     TEXT,
+    order_number TEXT,
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_telegram_chats_order ON telegram_chats(order_number);
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_telegram_chats_username
+    ON telegram_chats(lower(username)) WHERE username IS NOT NULL;
+
 CREATE TABLE IF NOT EXISTS order_items (
     id           SERIAL PRIMARY KEY,
     order_id     INTEGER NOT NULL REFERENCES orders(id) ON DELETE CASCADE,

@@ -318,7 +318,7 @@ export default function AdminPage() {
       ) : null}
 
       {totals ? (
-        <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
+        <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
           {/* Метрики кликабельны: клик сразу применяет фильтр заказов. */}
           <StatCard
             testId="stat-orders-total"
@@ -345,8 +345,15 @@ export default function AdminPage() {
             label="Выручка за сегодня"
             value={formatPrice(totals.revenue_today)}
             active={period === 'today'}
-            hint="Заказы за сегодня"
+            hint="Только выполненные"
             onClick={() => setPeriod('today')}
+          />
+          <StatCard
+            testId="stat-revenue-pending"
+            label="В работе"
+            value={formatPrice(totals.revenue_pending)}
+            active={false}
+            hint="Ещё не выданы"
           />
           <StatCard
             testId="stat-products"
