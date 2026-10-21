@@ -27,3 +27,7 @@ Thumbs.db
 
 # Local Netlify folder
 .netlify
+
+# Сгенерированные скрипты проверок (создаются check_catalog.py и check_admin.py)
+backend/scripts/_check_catalog.mjs
+backend/scripts/_check_admin.mjs

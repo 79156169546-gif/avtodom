@@ -25,6 +25,44 @@
   input[type='number'] {
     -moz-appearance: textfield;
   }
+
+  /* Двойной ползунок цены: два range-инпута лежат друг на друге,
+     каждый ловит мышь только за своей ручкой. */
+  .range-slider {
+    -webkit-appearance: none;
+    appearance: none;
+    background: transparent;
+    pointer-events: none;
+  }
+
+  .range-slider::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    pointer-events: auto;
+    height: 1rem;
+    width: 1rem;
+    border-radius: 9999px;
+    background: #fff;
+    border: 2px solid #C2410C;
+    box-shadow: 0 1px 3px rgb(0 0 0 / 0.2);
+    cursor: pointer;
+  }
+
+  .range-slider::-moz-range-thumb {
+    pointer-events: auto;
+    height: 1rem;
+    width: 1rem;
+    border-radius: 9999px;
+    background: #fff;
+    border: 2px solid #C2410C;
+    box-shadow: 0 1px 3px rgb(0 0 0 / 0.2);
+    cursor: pointer;
+  }
+
+  .range-slider:focus-visible::-webkit-slider-thumb {
+    outline: 2px solid #EA580C;
+    outline-offset: 2px;
+  }
 }
 
 @layer components {

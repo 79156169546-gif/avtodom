@@ -64,6 +64,7 @@ CAR_ALIASES: dict[str, str] = {
     "форд": "FORD",
     "шкода": "SKODA",
     "фольксваген": "VOLKSWAGEN",
+    "vw": "VOLKSWAGEN",
     "вольксваген": "VOLKSWAGEN",
     "мерседес": "MERCEDES-BENZ",
     "мерседес-бенц": "MERCEDES-BENZ",

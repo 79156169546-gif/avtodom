@@ -70,8 +70,9 @@ export function fetchHealth() {
 
 // --- справочник авто и режим работы ---------------------------------------
 
-export function fetchCarMakes(query = '') {
-  return request(`/api/cars/makes?q=${encodeURIComponent(query)}`, {
+export function fetchCarMakes(query = '', limit = 40) {
+  const params = new URLSearchParams({ q: query, limit: String(limit) })
+  return request(`/api/cars/makes?${params.toString()}`, {
     auth: false,
   })
 }
@@ -79,6 +80,17 @@ export function fetchCarMakes(query = '') {
 export function fetchCarModels(make, query = '') {
   const params = new URLSearchParams({ make: make || '', q: query })
   return request(`/api/cars/models?${params.toString()}`, { auth: false })
+}
+
+export function fetchCarYears(make = '', model = '') {
+  const params = new URLSearchParams({ make: make || '', model: model || '' })
+  return request(`/api/cars/years?${params.toString()}`, { auth: false })
+}
+
+export function fetchCarVin(vin) {
+  return request(`/api/cars/vin?vin=${encodeURIComponent(vin || '')}`, {
+    auth: false,
+  })
 }
 
 export function fetchStoreInfo() {

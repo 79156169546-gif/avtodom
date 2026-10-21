@@ -24,6 +24,34 @@ ALTER TABLE products ADD COLUMN IF NOT EXISTS is_on_order BOOLEAN NOT NULL DEFAU
 ALTER TABLE products ADD COLUMN IF NOT EXISTS order_days INTEGER NOT NULL DEFAULT 3
     CHECK (order_days >= 0 AND order_days <= 365);
 
+-- Совместимость деталей с автомобилями ------------------------------------
+-- Одна деталь подходит нескольким моделям — поэтому отдельная таблица.
+-- make        — марка каноническим видом из backend/cars.py (например KIA)
+-- model       — модель (NULL — все модели марки)
+-- year_from / year_to — диапазон годов выпуска (NULL — без ограничения)
+CREATE TABLE IF NOT EXISTS product_compatibility (
+    id         SERIAL PRIMARY KEY,
+    product_id INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+    make       TEXT NOT NULL,
+    model      TEXT,
+    year_from  INTEGER CHECK (year_from IS NULL OR year_from BETWEEN 1900 AND 2100),
+    year_to    INTEGER CHECK (year_to IS NULL OR year_to BETWEEN 1900 AND 2100),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_product_compatibility_product
+    ON product_compatibility(product_id);
+CREATE INDEX IF NOT EXISTS idx_product_compatibility_make
+    ON product_compatibility(make);
+
+-- Одна и та же марка/модель/год для товара — одна строка.
+-- Без этого повторное сохранение копит дубли.
+CREATE UNIQUE INDEX IF NOT EXISTS uq_product_compatibility
+    ON product_compatibility(
+        product_id, make, COALESCE(model, ''),
+        COALESCE(year_from, -1), COALESCE(year_to, -1)
+    );
+
 -- Пользователи и сессии -------------------------------------------------
 CREATE TABLE IF NOT EXISTS users (
     id            SERIAL PRIMARY KEY,

@@ -21,6 +21,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 from datetime import date, datetime, timedelta, timezone
@@ -31,9 +32,12 @@ from fastapi.middleware.cors import CORSMiddleware
 
 try:  # пакетный импорт (uvicorn backend.main:app)
     from . import auth, cars, db, settings
+    from . import vin as vin_parser
     from .models import (
         ORDER_STATUS_LABELS,
         AuthOut,
+        CompatibilityIn,
+        CompatibilityOut,
         LoginIn,
         OrderEventOut,
         OrderIn,
@@ -49,11 +53,14 @@ try:  # пакетный импорт (uvicorn backend.main:app)
 except ImportError:  # запуск как top-level модуль (uvicorn main:app, root dir = backend)
     import auth  # type: ignore[no-redef]
     import cars  # type: ignore[no-redef]
+    import vin as vin_parser  # type: ignore[no-redef]
     import db  # type: ignore[no-redef]
     import settings  # type: ignore[no-redef]
     from models import (  # type: ignore[no-redef]
         ORDER_STATUS_LABELS,
         AuthOut,
+        CompatibilityIn,
+        CompatibilityOut,
         LoginIn,
         OrderEventOut,
         OrderIn,
@@ -172,7 +179,77 @@ async def _load_order_items(order_id: int) -> list[OrderItemOut]:
     ]
 
 
-async def _build_order_out(row, *, telegram_sent: bool, delivery: str) -> OrderOut:
+async def _load_order_items_bulk(order_ids: list[int]) -> dict[int, list[OrderItemOut]]:
+    """Позиции всех заказов одним запросом (иначе N+1 и долгая загрузка)."""
+    if not order_ids:
+        return {}
+    rows = await db.fetch(
+        """
+        SELECT order_id, product_id, product_name, price, qty, line_total,
+               is_on_order, order_days
+        FROM order_items WHERE order_id = ANY($1::int[]) ORDER BY id
+        """,
+        order_ids,
+    )
+    grouped: dict[int, list[OrderItemOut]] = {}
+    for row in rows:
+        grouped.setdefault(row["order_id"], []).append(
+            OrderItemOut(
+                product_id=row["product_id"],
+                product_name=row["product_name"],
+                price=row["price"],
+                qty=row["qty"],
+                line_total=row["line_total"],
+                is_on_order=row["is_on_order"],
+                order_days=row["order_days"],
+            )
+        )
+    return grouped
+
+
+async def _load_order_events_bulk(order_ids: list[int]) -> dict[int, list[OrderEventOut]]:
+    """История всех заказов одним запросом (иначе N+1 и долгая загрузка)."""
+    if not order_ids:
+        return {}
+    rows = await db.fetch(
+        """
+        SELECT id, order_id, status, note, actor, created_at
+        FROM order_events WHERE order_id = ANY($1::int[]) ORDER BY id
+        """,
+        order_ids,
+    )
+    grouped: dict[int, list[OrderEventOut]] = {}
+    for row in rows:
+        grouped.setdefault(row["order_id"], []).append(
+            OrderEventOut(
+                id=row["id"],
+                status=row["status"],
+                status_label=_status_label(row["status"]),
+                note=row["note"],
+                actor=row["actor"],
+                created_at=row["created_at"],
+            )
+        )
+    return grouped
+
+
+async def _build_order_out(
+    row,
+    *,
+    telegram_sent: bool,
+    delivery: str,
+    items: list[OrderItemOut] | None = None,
+    events: list[OrderEventOut] | None = None,
+) -> OrderOut:
+    """Собрать заказ из строки БД.
+
+    Позиции и события можно передать готовыми: для списка заказов они
+    загружаются одним запросом на все заказы, а не по одному (N+1).
+    """
+    if items is None:
+        items = await _load_order_items(row["id"])
+    if events is None:
+        events = await _load_order_events(row["id"])
     return OrderOut(
         id=row["id"],
         order_number=row["order_number"],
@@ -192,8 +269,8 @@ async def _build_order_out(row, *, telegram_sent: bool, delivery: str) -> OrderO
         vin=row["vin"],
         address=row["address"],
         comment=row["comment"],
-        items=await _load_order_items(row["id"]),
-        events=await _load_order_events(row["id"]),
+        items=items,
+        events=events,
         telegram_sent=telegram_sent,
         telegram_delivery=delivery,
     )
@@ -231,15 +308,78 @@ async def health() -> dict[str, str]:
     }
 
 
+async def _load_compatibility(product_ids: list[int]) -> dict[int, list[CompatibilityOut]]:
+    """Совместимость деталей с авто: product_id -> список записей."""
+    if not product_ids:
+        return {}
+    rows = await db.fetch(
+        """
+        SELECT id, product_id, make, model, year_from, year_to
+        FROM product_compatibility
+        WHERE product_id = ANY($1::int[])
+        ORDER BY make, model NULLS FIRST, year_from NULLS FIRST
+        """,
+        product_ids,
+    )
+    grouped: dict[int, list[CompatibilityOut]] = {}
+    for row in rows:
+        grouped.setdefault(row["product_id"], []).append(
+            CompatibilityOut(
+                id=row["id"],
+                make=row["make"],
+                model=row["model"],
+                year_from=row["year_from"],
+                year_to=row["year_to"],
+            )
+        )
+    return grouped
+
+
+def _fits_car(
+    compatibility: list[CompatibilityOut],
+    make: str | None,
+    model: str | None,
+    year: int | None,
+) -> bool:
+    """Подходит ли деталь к выбранному автомобилю.
+
+    Деталь без записей совместимости считается универсальной — подходит
+    к любому авто. Если записи есть, марка/модель/год должны совпасть.
+    """
+    if not compatibility:
+        return True
+    wanted_make = (make or "").strip().upper()
+    wanted_model = (model or "").strip().upper()
+    for item in compatibility:
+        if wanted_make and item.make.upper() != wanted_make:
+            continue
+        if wanted_model:
+            item_model = (item.model or "").upper()
+            if item_model and item_model != wanted_model:
+                continue
+        if year is not None:
+            if item.year_from is not None and year < item.year_from:
+                continue
+            if item.year_to is not None and year > item.year_to:
+                continue
+        return True
+    return False
+
+
 @app.get("/api/products", response_model=list[ProductOut])
 async def list_products(
     on_order_only: bool = False,
     in_stock_only: bool = False,
+    car_make: str | None = None,
+    car_model: str | None = None,
+    car_year: int | None = None,
 ) -> list[ProductOut]:
     """Каталог витрины.
 
     Показываем и детали в наличии, и детали под заказ — клиент должен видеть,
     что можно заказать. Товары «нет в наличии и не под заказ» скрыты.
+
+    car_make / car_model / car_year — фильтр по выбранному автомобилю.
     """
     rows = await db.fetch(
         """
@@ -252,10 +392,26 @@ async def list_products(
         """
     )
     products = [ProductOut(**dict(row)) for row in rows]
-    if on_order_only:
-        products = [item for item in products if item.is_on_order]
-    if in_stock_only:
-        products = [item for item in products if item.in_stock]
+
+    compatibility_map = await _load_compatibility([item.id for item in products])
+    for item in products:
+        item.compatibility = compatibility_map.get(item.id, [])
+
+    # Флаги «в наличии» и «под заказ» — одно измерение, поэтому
+    # одновременно дают объединение, а не пустое пересечение.
+    if on_order_only or in_stock_only:
+        products = [
+            item
+            for item in products
+            if (in_stock_only and item.in_stock)
+            or (on_order_only and item.is_on_order and not item.in_stock)
+        ]
+    if car_make or car_model or car_year:
+        products = [
+            item
+            for item in products
+            if _fits_car(item.compatibility, car_make, car_model, car_year)
+        ]
     return products
 
 
@@ -283,6 +439,44 @@ async def car_models(
         "models": matches,
         "total": len(cars.CAR_CATALOG.get(canonical, [])),
     }
+
+
+@app.get("/api/cars/years")
+async def car_years(make: str = "", model: str = "") -> dict[str, object]:
+    """Годы выпуска, для которых есть детали в каталоге.
+
+    Пустой список — значит под выбранную марку/модель деталей пока нет,
+    клиент всё равно может выбрать год вручную из общего диапазона.
+    """
+    canonical = cars.resolve_make(make) or ""
+    params: list[object] = [canonical]
+    query = "SELECT DISTINCT year_from, year_to FROM product_compatibility WHERE make = $1"
+    if model.strip():
+        params.append(model.strip())
+        query += " AND model = $2"
+    query += " ORDER BY year_from NULLS FIRST"
+
+    rows = await db.fetch(query, *params)
+    years: set[int] = set()
+    for row in rows:
+        start = row["year_from"]
+        end = row["year_to"]
+        if start is None and end is None:
+            continue
+        low = start if start is not None else end
+        high = end if end is not None else start
+        years.update(range(int(low), int(high) + 1))
+    return {
+        "make": canonical,
+        "model": model.strip(),
+        "years": sorted(years, reverse=True),
+    }
+
+
+@app.get("/api/cars/vin")
+async def car_vin(vin: str = "") -> dict[str, object]:
+    """Разбор VIN: марка (WMI) и год выпуска (позиция 10)."""
+    return vin_parser.decode_vin(vin)
 
 
 @app.get("/api/store")
@@ -636,8 +830,21 @@ async def my_orders(user: dict = Depends(auth.current_user)) -> list[OrderOut]:
         """,
         user["id"],
     )
+    order_ids = [row["id"] for row in rows]
+    # Позиции и события грузим параллельно: к Neon идёт два раунд-tripа
+    # вместо трёх последовательных.
+    items_map, events_map = await asyncio.gather(
+        _load_order_items_bulk(order_ids),
+        _load_order_events_bulk(order_ids),
+    )
     return [
-        await _build_order_out(row, telegram_sent=True, delivery="stored")
+        await _build_order_out(
+            row,
+            telegram_sent=True,
+            delivery="stored",
+            items=items_map.get(row["id"], []),
+            events=events_map.get(row["id"], []),
+        )
         for row in rows
     ]
 
@@ -740,8 +947,22 @@ async def admin_orders(
         """,
         *params,
     )
+    # Позиции и события всех заказов — одним запросом каждый.
+    # Иначе на каждый заказ уходят отдельные запросы, и список грузится
+    # десятки секунд (N+1).
+    order_ids = [row["id"] for row in rows]
+    items_map, events_map = await asyncio.gather(
+        _load_order_items_bulk(order_ids),
+        _load_order_events_bulk(order_ids),
+    )
     return [
-        await _build_order_out(row, telegram_sent=True, delivery="stored")
+        await _build_order_out(
+            row,
+            telegram_sent=True,
+            delivery="stored",
+            items=items_map.get(row["id"], []),
+            events=events_map.get(row["id"], []),
+        )
         for row in rows
     ]
 
@@ -793,6 +1014,48 @@ async def admin_update_order(
     return await _build_order_out(updated, telegram_sent=True, delivery="stored")
 
 
+async def _replace_compatibility(
+    product_id: int, items: list[CompatibilityIn] | None
+) -> None:
+    """Полностью перезаписать список совместимости товара.
+
+    None — совместимость не передана, ничего не трогаем.
+    Замена выполняется одной транзакцией: иначе при ошибке товар остался бы
+    без совместимости или с дублями.
+    """
+    if items is None:
+        return
+
+    # Дубли не нужны: одна и та же марка/модель/год — одна строка.
+    unique: list[tuple[str, str | None, int | None, int | None]] = []
+    seen: set[tuple[str, str | None, int | None, int | None]] = set()
+    for item in items:
+        key = (item.make, item.model, item.year_from, item.year_to)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(key)
+
+    pool = await db.get_pool()
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            await conn.execute(
+                "DELETE FROM product_compatibility WHERE product_id = $1", product_id
+            )
+            if unique:
+                await conn.executemany(
+                    """
+                    INSERT INTO product_compatibility
+                        (product_id, make, model, year_from, year_to)
+                    VALUES ($1,$2,$3,$4,$5)
+                    """,
+                    [
+                        (product_id, make, model, year_from, year_to)
+                        for make, model, year_from, year_to in unique
+                    ],
+                )
+
+
 @app.get("/api/admin/products", response_model=list[ProductOut])
 async def admin_products(user: dict = Depends(auth.current_owner)) -> list[ProductOut]:
     """Полный каталог, включая скрытые и отсутствующие в наличии."""
@@ -803,7 +1066,11 @@ async def admin_products(user: dict = Depends(auth.current_owner)) -> list[Produ
         FROM products ORDER BY id
         """
     )
-    return [ProductOut(**dict(row)) for row in rows]
+    products = [ProductOut(**dict(row)) for row in rows]
+    compatibility_map = await _load_compatibility([item.id for item in products])
+    for item in products:
+        item.compatibility = compatibility_map.get(item.id, [])
+    return products
 
 
 @app.post("/api/admin/products", response_model=ProductOut, status_code=201)
@@ -842,8 +1109,12 @@ async def admin_create_product(
         payload.order_days,
         payload.description,
     )
+    await _replace_compatibility(row["id"], payload.compatibility)
     logger.info("Добавлен товар %s (%s)", payload.sku, payload.name)
-    return ProductOut(**dict(row))
+    product = ProductOut(**dict(row))
+    stored = await _load_compatibility([row["id"]])
+    product.compatibility = stored.get(row["id"], [])
+    return product
 
 
 @app.patch("/api/admin/products/{product_id}", response_model=ProductOut)
@@ -896,6 +1167,7 @@ async def admin_update_product(
         payload.description,
         product_id,
     )
+    await _replace_compatibility(product_id, payload.compatibility)
     logger.info(
         "Товар %s обновлён: цена %s, скидка %s%%, под заказ=%s",
         payload.sku,
@@ -903,7 +1175,12 @@ async def admin_update_product(
         payload.discount_percent,
         payload.is_on_order,
     )
-    return ProductOut(**dict(row))
+    product = ProductOut(**dict(row))
+    # Отдаём фактически сохранённую совместимость: входной список мог
+    # содержать дубли, а в базе они схлопываются.
+    stored = await _load_compatibility([product_id])
+    product.compatibility = stored.get(product_id, [])
+    return product
 
 
 @app.delete("/api/admin/products/{product_id}")

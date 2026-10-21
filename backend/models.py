@@ -86,6 +86,35 @@ ORDER_STATUS_LABELS: dict[str, str] = {
 # ---------------------------------------------------------------------------
 
 
+class CompatibilityIn(BaseModel):
+    """Совместимость детали с автомобилем — ввод владельцем."""
+
+    make: str = Field(min_length=1, max_length=80)
+    model: str | None = Field(default=None, max_length=80)
+    year_from: int | None = Field(default=None, ge=1900, le=2100)
+    year_to: int | None = Field(default=None, ge=1900, le=2100)
+
+    @field_validator("make")
+    @classmethod
+    def _clean_make(cls, value: str) -> str:
+        cleaned = value.strip().upper()
+        if not cleaned:
+            raise ValueError("Укажите марку автомобиля")
+        return cleaned
+
+    @field_validator("model")
+    @classmethod
+    def _clean_model(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        cleaned = value.strip()
+        return cleaned or None
+
+
+class CompatibilityOut(CompatibilityIn):
+    id: int
+
+
 class ProductOut(BaseModel):
     id: int
     sku: str
@@ -101,6 +130,8 @@ class ProductOut(BaseModel):
     is_on_order: bool = False
     order_days: int = 0
     description: str | None = None
+    # С какими автомобилями совместима деталь (пусто — подходит ко всем).
+    compatibility: list[CompatibilityOut] = []
 
 
 class ProductIn(BaseModel):
@@ -118,6 +149,10 @@ class ProductIn(BaseModel):
     is_on_order: bool = False
     order_days: int = Field(default=3, ge=0, le=365)
     description: str | None = Field(default=None, max_length=1000)
+    # С какими автомобилями совместима деталь.
+    # None — совместимость не передана (не трогаем её);
+    # [] — подходит ко всем; список — заменяем целиком.
+    compatibility: list[CompatibilityIn] | None = None
 
     @field_validator("sku")
     @classmethod
