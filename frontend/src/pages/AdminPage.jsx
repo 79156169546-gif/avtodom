@@ -108,6 +108,10 @@ export default function AdminPage() {
   const [sort, setSort] = useState('newest')
   // Поиск по каталогу — владелец ищет деталь по артикулу или названию.
   const [productQuery, setProductQuery] = useState('')
+  // Показывать ли скрытые товары. По умолчанию — нет.
+  const [showHidden, setShowHidden] = useState(
+    () => localStorage.getItem('autodom.admin.showHidden') === '1',
+  )
   const [expanded, setExpanded] = useState(false)
   const [customRange, setCustomRange] = useState({ dateFrom: '', dateTo: '' })
 
@@ -255,6 +259,12 @@ export default function AdminPage() {
       `${product.sku}: срок поставки ${days} дн.`,
     )
 
+  // Показ скрытых товаров запоминаем: владелец часто работает именно с ними.
+  const toggleShowHidden = (value) => {
+    setShowHidden(value)
+    localStorage.setItem('autodom.admin.showHidden', value ? '1' : '0')
+  }
+
   const toggleActive = async (product) => {
     setBusy(true)
     try {
@@ -268,17 +278,20 @@ export default function AdminPage() {
   }
 
   // Поиск по каталогу: название, артикул, бренд или категория.
+  // Скрытые товары показываем только по явному запросу — иначе в рабочем
+  // списке больше половины строк, а это не то, с чем работают ежедневно.
   const filteredProducts = useMemo(() => {
     const needle = productQuery.trim().toLowerCase()
-    if (!needle) return products
-    return products.filter((product) =>
-      [product.name, product.sku, product.brand, product.category]
+    return products.filter((product) => {
+      if (!showHidden && !product.is_active) return false
+      if (!needle) return true
+      return [product.name, product.sku, product.brand, product.category]
         .filter(Boolean)
-        .some((value) => value.toLowerCase().includes(needle)),
-    )
-  }, [products, productQuery])
+        .some((value) => value.toLowerCase().includes(needle))
+    })
+  }, [products, productQuery, showHidden])
 
-  // Скрытых товаров в списке — владельцу важно видеть, что они не в продаже.
+  // Сколько скрытых товаров есть в каталоге — показываем на переключателе.
   const hiddenCount = useMemo(
     () => products.filter((product) => !product.is_active).length,
     [products],
@@ -599,20 +612,24 @@ export default function AdminPage() {
                 onChange={(event) => setProductQuery(event.target.value)}
               />
             </div>
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+              {hiddenCount > 0 ? (
+                <>
+                  <Switch
+                    size="sm"
+                    testId="admin-show-hidden"
+                    label={`Скрытые (${hiddenCount})`}
+                    checked={showHidden}
+                    onChange={toggleShowHidden}
+                  />
+                  <span aria-hidden="true" className="h-4 w-px bg-gray-200" />
+                </>
+              ) : null}
               <p className="text-sm text-gray-500">
-                {hiddenCount > 0 ? (
-                  <>
-                    Показано{' '}
-                    <span className="font-semibold text-gray-900">{filteredProducts.length}</span>
-                    , из них скрыто {hiddenCount}
-                  </>
-                ) : (
-                  <>
-                    Товаров:{' '}
-                    <span className="font-semibold text-gray-900">{filteredProducts.length}</span>
-                  </>
-                )}
+                Товаров:{' '}
+                <span className="font-semibold text-gray-900">
+                  {filteredProducts.length}
+                </span>
               </p>
               <button
                 type="button"

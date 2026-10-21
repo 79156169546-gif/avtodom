@@ -1224,9 +1224,14 @@ async def admin_stats(user: dict = Depends(auth.current_owner)) -> dict[str, obj
             (SELECT count(*) FROM orders WHERE status = 'new') AS orders_new,
             (SELECT count(*) FROM orders WHERE created_at::date = current_date)
                 AS orders_today,
-            (SELECT COALESCE(sum(total), 0) FROM orders) AS revenue_total,
-            (SELECT COALESCE(sum(total), 0) FROM orders WHERE created_at::date = current_date)
-                AS revenue_today,
+            -- Выручка — по заказам, которые не отклонены и не отменены.
+            -- Отклонённый заказ денег не приносит, поэтому сумма должна
+            -- уменьшаться сразу после смены статуса.
+            (SELECT COALESCE(sum(total), 0) FROM orders
+                WHERE status NOT IN ('rejected', 'cancelled')) AS revenue_total,
+            (SELECT COALESCE(sum(total), 0) FROM orders
+                WHERE created_at::date = current_date
+                    AND status NOT IN ('rejected', 'cancelled')) AS revenue_today,
             (SELECT count(*) FROM products WHERE is_active) AS products_active,
             (SELECT count(*) FROM products WHERE NOT is_active) AS products_hidden,
             (SELECT count(*) FROM products WHERE in_stock AND is_active)

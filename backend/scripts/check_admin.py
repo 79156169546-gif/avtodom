@@ -267,6 +267,82 @@ const statusAfter = await page.evaluate(async (num) => {{
 }}, targetOrder);
 check('статус изменился на сервере', statusAfter === 'accepted', true);
 
+// Выручка за сегодня должна уменьшаться, когда заказ отклоняют:
+// отклонённый заказ денег не приносит.
+const revenueBefore = await page.evaluate(async () => {{
+  const token = localStorage.getItem('autodom.token');
+  const resp = await fetch('/api/admin/stats', {{
+    headers: {{ Authorization: 'Bearer ' + token }},
+  }});
+  const data = await resp.json();
+  return {{ today: Number(data.totals.revenue_today),
+           total: Number(data.totals.revenue_total) }};
+}});
+
+const orderToReject = await page.evaluate(async () => {{
+  const token = localStorage.getItem('autodom.token');
+  const resp = await fetch('/api/admin/orders?order_status=accepted&limit=1', {{
+    headers: {{ Authorization: 'Bearer ' + token }},
+  }});
+  const list = await resp.json();
+  if (!list.length) return null;
+  return {{ id: list[0].id, number: list[0].order_number, total: Number(list[0].total) }};
+}});
+
+if (orderToReject) {{
+  await page.evaluate(async (info) => {{
+    const token = localStorage.getItem('autodom.token');
+    await fetch('/api/admin/orders/' + info.id, {{
+      method: 'PATCH',
+      headers: {{ 'Content-Type': 'application/json',
+                 Authorization: 'Bearer ' + token }},
+      body: JSON.stringify({{ status: 'rejected' }}),
+    }});
+  }}, orderToReject);
+  await wait(1200);
+
+  const revenueAfter = await page.evaluate(async () => {{
+    const token = localStorage.getItem('autodom.token');
+    const resp = await fetch('/api/admin/stats', {{
+      headers: {{ Authorization: 'Bearer ' + token }},
+    }});
+    const data = await resp.json();
+    return {{ today: Number(data.totals.revenue_today),
+             total: Number(data.totals.revenue_total) }};
+  }});
+
+  check('отклонение уменьшает выручку за сегодня',
+    Math.abs((revenueBefore.today - revenueAfter.today) - orderToReject.total) < 0.01, true);
+  check('отклонение уменьшает общую выручку',
+    Math.abs((revenueBefore.total - revenueAfter.total) - orderToReject.total) < 0.01, true);
+
+  // Возвращаем заказ в исходный статус.
+  await page.evaluate(async (info) => {{
+    const token = localStorage.getItem('autodom.token');
+    await fetch('/api/admin/orders/' + info.id, {{
+      method: 'PATCH',
+      headers: {{ 'Content-Type': 'application/json',
+                 Authorization: 'Bearer ' + token }},
+      body: JSON.stringify({{ status: 'accepted' }}),
+    }});
+  }}, orderToReject);
+  await wait(1200);
+
+  const revenueRestored = await page.evaluate(async () => {{
+    const token = localStorage.getItem('autodom.token');
+    const resp = await fetch('/api/admin/stats', {{
+      headers: {{ Authorization: 'Bearer ' + token }},
+    }});
+    const data = await resp.json();
+    return {{ today: Number(data.totals.revenue_today),
+             total: Number(data.totals.revenue_total) }};
+  }});
+  check('возврат статуса восстанавливает выручку',
+    Math.abs(revenueRestored.today - revenueBefore.today) < 0.01, true);
+}} else {{
+  check('нашёлся заказ для проверки выручки', false, true);
+}}
+
 // Возвращаем подготовленный заказ в исходный статус: тест не должен
 // расходовать заказы, иначе со временем их не останется.
 const restored = await page.evaluate(async (info) => {{
@@ -382,6 +458,32 @@ await firstRow.locator(`[data-testid="product-onorder-${{sku}}"]`).dispatchEvent
 await wait(2500);
 await firstRow.locator(`[data-testid="product-stock-${{sku}}"]`).dispatchEvent('click');
 await wait(2500);
+
+// Переключатель «Скрытые» — по умолчанию выключен, скрытые товары не видны.
+// Сбрасываем флаг: тест не должен зависеть от предыдущих прогонов.
+await page.evaluate(() => localStorage.setItem('autodom.admin.showHidden', '0'));
+await page.reload({{ waitUntil: 'domcontentloaded' }});
+await page.locator('[data-testid="admin-tab-products"]').click();
+await wait(3000);
+const hiddenSwitch = page.locator('[data-testid="admin-show-hidden"]');
+check('переключатель «Скрытые» есть', await hiddenSwitch.count(), 1);
+check('по умолчанию скрытые не показываются',
+  await page.locator('[data-testid="admin-products-table"] tbody tr')
+    .evaluateAll((els) => els.every((e) => !e.className.includes('opacity-60'))), true);
+const activeOnly = await page.locator('[data-testid="admin-products-table"] tbody tr').count();
+check('в списке только активные товары', activeOnly > 0 && activeOnly < 137, true);
+
+await hiddenSwitch.dispatchEvent('click');
+await wait(2000);
+const withHidden = await page.locator('[data-testid="admin-products-table"] tbody tr').count();
+check('включение показывает скрытые', withHidden > activeOnly, true);
+check('состояние сохраняется в localStorage',
+  await page.evaluate(() => localStorage.getItem('autodom.admin.showHidden')), '1');
+
+await hiddenSwitch.dispatchEvent('click');
+await wait(2000);
+check('выключение возвращает активные',
+  await page.locator('[data-testid="admin-products-table"] tbody tr').count(), activeOnly);
 
 // Drawer
 await page.locator('[data-testid="admin-add-product"]').click();
