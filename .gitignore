@@ -3,6 +3,8 @@
 .env.local
 .env.*.local
 backend/.env.telegram
+# Учётные данные владельца для автотестов — никогда в Git
+backend/.env.credentials
 
 # Python
 backend/.venv/

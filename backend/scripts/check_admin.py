@@ -592,31 +592,13 @@ process.exit(0);
 def _owner_credentials() -> tuple[str, str]:
     """Логин владельца для входа в кабинет.
 
-    Пароль берём из существующего тестового скрипта, чтобы не плодить
-    копии учётных данных по проекту. Переменные окружения имеют приоритет.
+    Учётные данные лежат вне Git (backend/.env.credentials или переменные
+    окружения) — пароль владельца не должен попадать в публичный репозиторий.
     """
-    import os
-    import re
+    sys.path.insert(0, str(BACKEND_DIR / "scripts"))
+    from credentials import owner_credentials
 
-    email = os.environ.get("AUTODOM_OWNER_EMAIL", "owner@autodom.ru")
-    password = os.environ.get("AUTODOM_OWNER_PASSWORD", "")
-
-    if not password:
-        source = BACKEND_DIR / "test_accounts.py"
-        if source.exists():
-            text = source.read_text(encoding="utf-8")
-            match = re.search(
-                r'"email":\s*"owner@autodom\.ru",\s*"password":\s*"([^"]+)"', text
-            )
-            if match:
-                password = match.group(1)
-
-    if not password:
-        raise SystemExit(
-            "Не найден пароль владельца. Задайте AUTODOM_OWNER_PASSWORD "
-            "в переменных окружения."
-        )
-    return email, password
+    return owner_credentials()
 
 
 if __name__ == "__main__":

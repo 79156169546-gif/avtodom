@@ -16,6 +16,9 @@ sys.path.insert(0, str(BACKEND_DIR.parent))
 
 BASE = "http://127.0.0.1:8000"
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from credentials import owner_credentials  # noqa: E402
+
 PASSED: list[str] = []
 FAILED: list[str] = []
 
@@ -155,9 +158,10 @@ def main() -> int:
     check("свой заказ в кабинете доступен", status == 200, f"статус {status}")
 
     print("\n[8] Вход владельца и кабинет владельца")
+    owner_email, owner_password = owner_credentials()
     status, owner_body = call(
         "/api/auth/login",
-        {"email": "owner@autodom.ru", "password": "OWNER_PASSWORD_PLACEHOLDER"},
+        {"email": owner_email, "password": owner_password},
     )
     check("вход владельца", status == 200, f"статус {status}: {owner_body}")
     if status != 200:
