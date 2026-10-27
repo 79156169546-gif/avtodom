@@ -85,17 +85,21 @@ STORE_OPEN_HOUR: int = int(_get("STORE_OPEN_HOUR", "8"))
 STORE_CLOSE_HOUR: int = int(_get("STORE_CLOSE_HOUR", "20"))
 
 # Контакты магазина — показываются в шапке витрины.
-STORE_NAME: str = _get("STORE_NAME", "Автодом")
-STORE_PHONE: str = _get("STORE_PHONE", "+7 (961) 010-80-01")
-STORE_PHONE_HREF: str = _get("STORE_PHONE_HREF", "+79610108001")
-STORE_ADDRESS: str = _get("STORE_ADDRESS", "ул. Высоковольтная, 49, Рязань")
-STORE_MAPS_URL: str = _get(
-    "STORE_MAPS_URL", "https://yandex.ru/maps/org/avtodom/56955083106/"
-)
-STORE_LAT: float = float(_get("STORE_LAT", "54.616215"))
-STORE_LON: float = float(_get("STORE_LON", "39.693777"))
-STORE_RATING: str = _get("STORE_RATING", "4,7")
-STORE_RATING_COUNT: int = int(_get("STORE_RATING_COUNT", "147"))
+# Дефолты — нейтральные (white-label шаблон). Для клиента меняются в .env
+# (или прямо из «Кабинета владельца» — тогда значение лежит в БД и имеет
+# приоритет над этими дефолтами, см. backend/main.py, /api/store).
+STORE_NAME: str = _get("STORE_NAME", "Автомагазин")
+STORE_SLOGAN: str = _get("STORE_SLOGAN", "Запчасти для вашего авто")
+STORE_CITY: str = _get("STORE_CITY", "Ваш город")
+STORE_PHONE: str = _get("STORE_PHONE", "+7 (999) 000-00-00")
+STORE_PHONE_HREF: str = _get("STORE_PHONE_HREF", "tel:+79990000000")
+STORE_ADDRESS: str = _get("STORE_ADDRESS", "Ваш город, ул. Примерная, 1")
+STORE_MAPS_URL: str = _get("STORE_MAPS_URL", "#")
+STORE_LOGO: str = _get("STORE_LOGO", "")
+STORE_LAT: float = float(_get("STORE_LAT", "0"))
+STORE_LON: float = float(_get("STORE_LON", "0"))
+STORE_RATING: str = _get("STORE_RATING", "5.0")
+STORE_RATING_COUNT: int = int(_get("STORE_RATING_COUNT", "10"))
 
 # 20:00–08:00 — нерабочее время, заказы в приоритете.
 NIGHT_ORDER_START_HOUR: int = int(_get("NIGHT_ORDER_START_HOUR", "20"))

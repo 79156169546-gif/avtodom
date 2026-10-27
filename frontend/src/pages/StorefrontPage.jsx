@@ -11,6 +11,7 @@ import {
   submitOrder,
 } from '../api.js'
 import { useAuth } from '../auth.jsx'
+import storeConfig from '../config.js'
 import CarPicker from '../components/CarPicker.jsx'
 import CartBar from '../components/CartBar.jsx'
 import CheckoutSheet from '../components/CheckoutSheet.jsx'
@@ -808,7 +809,7 @@ export default function StorefrontPage() {
         {/* Контакты — на мобильных дублируют шапку, чтобы не искать */}
         <div className="mt-6 grid gap-3 sm:grid-cols-2">
           <a
-            href={store?.phone_href ?? 'tel:+796****8001'}
+            href={store?.phone_href ?? storeConfig.phoneHref}
             data-testid="store-contact-phone"
             className="card flex items-center gap-3 p-4 transition hover:shadow-md focus:outline-none focus:ring-2 focus:ring-orange-500"
           >
@@ -820,12 +821,12 @@ export default function StorefrontPage() {
                 Позвоните нам
               </span>
               <span className="block truncate font-semibold text-gray-900">
-                {store?.phone ?? '+7 (961) 010-80-01'}
+                {store?.phone ?? storeConfig.phone}
               </span>
             </span>
           </a>
           <a
-            href={store?.maps_url ?? 'https://yandex.ru/maps/org/avtodom/56955083106/'}
+            href={store?.maps_url ?? storeConfig.mapsUrl}
             target="_blank"
             rel="noreferrer"
             data-testid="store-contact-address"
@@ -839,7 +840,7 @@ export default function StorefrontPage() {
                 Мы находимся
               </span>
               <span className="block truncate font-semibold text-gray-900">
-                {store?.address ?? 'ул. Высоковольтная, 49, Рязань'}
+                {store?.address ?? storeConfig.address}
               </span>
               <span className="block text-xs text-gray-400">
                 Открыть в Яндекс.Картах

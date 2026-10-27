@@ -50,8 +50,8 @@ def api_login() -> str:
         f"{PROD_API}/api/auth/login",
         data=json.dumps(
             {
-                "email": creds["AUTODOM_OWNER_EMAIL"],
-                "password": creds["AUTODOM_OWNER_PASSWORD"],
+                "email": creds["STORE_OWNER_EMAIL"],
+                "password": creds["STORE_OWNER_PASSWORD"],
             }
         ).encode(),
         headers={"Content-Type": "application/json"},

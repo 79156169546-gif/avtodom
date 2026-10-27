@@ -33,3 +33,6 @@ Thumbs.db
 # Сгенерированные скрипты проверок (создаются check_catalog.py и check_admin.py)
 backend/scripts/_check_catalog.mjs
 backend/scripts/_check_admin.mjs
+
+# node_modules для Playwright-проверок (ставится npm install)
+backend/scripts/node_modules

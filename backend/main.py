@@ -47,6 +47,7 @@ try:  # пакетный импорт (uvicorn backend.main:app)
         ProductIn,
         ProductOut,
         RegisterIn,
+        StoreSettingsIn,
         UserOut,
     )
     from .telegram import is_night_order, notifier
@@ -71,6 +72,7 @@ except ImportError:  # запуск как top-level модуль (uvicorn main:
         ProductIn,
         ProductOut,
         RegisterIn,
+        StoreSettingsIn,
         UserOut,
     )
     from telegram import is_night_order, notifier  # type: ignore[no-redef]
@@ -113,6 +115,10 @@ app.add_middleware(
 )
 
 PICKUP_LABELS = {"pickup": "Самовывоз", "delivery": "Доставка"}
+
+# Ключи настроек магазина, которые владелец может править из кабинета.
+# Держим в синхроне с моделью StoreSettingsIn — единый источник истины.
+STORE_SETTINGS_KEYS: tuple[str, ...] = tuple(StoreSettingsIn.model_fields)
 
 
 # ---------------------------------------------------------------------------
@@ -481,26 +487,86 @@ async def car_vin(vin: str = "") -> dict[str, object]:
     return vin_parser.decode_vin(vin)
 
 
+async def _store_overrides() -> dict[str, str]:
+    """Все настройки магазина из БД (таблица store_settings).
+
+    Значения здесь имеют приоритет над дефолтами из settings.py (которые,
+    в свою очередь, берутся из .env). Так владелец правит магазин из кабинета.
+    """
+    rows = await db.fetch("SELECT key, value FROM store_settings")
+    return {r["key"]: r["value"] for r in rows if r["key"] is not None}
+
+
+def _parse_hour(value: str | None, default: int) -> int:
+    """Целочасовой переопределитель: пусто/пусто → дефолт из настроек."""
+    if value is None or str(value).strip() == "":
+        return default
+    try:
+        return int(str(value).strip())
+    except (TypeError, ValueError):
+        return default
+
+
+def _work_hours_from_overrides(ov: dict[str, str]) -> tuple[int, int, str]:
+    """Возвращает (open_hour, close_hour, work_hours_str) для отображения.
+
+    Приоритет: явные open_hour/close_hour → разбор work_hours («09:00–20:00»)
+    → дефолты настроек.
+    """
+    if "work_hours" in ov and str(ov["work_hours"]).strip():
+        import re
+
+        m = re.match(
+            r"\s*(\d{1,2}):(\d{2})\s*[-–—]\s*(\d{1,2}):(\d{2})",
+            str(ov["work_hours"]),
+        )
+        if m:
+            open_h, _, close_h = int(m.group(1)), m.group(2), int(m.group(4))
+            return open_h, close_h, str(ov["work_hours"]).strip()
+    open_h = _parse_hour(ov.get("open_hour"), settings.STORE_OPEN_HOUR)
+    close_h = _parse_hour(ov.get("close_hour"), settings.STORE_CLOSE_HOUR)
+    wh = f"{open_h:02d}:00–{close_h:02d}:00"
+    return open_h, close_h, wh
+
+
 @app.get("/api/store")
 async def store_info() -> dict[str, object]:
-    """Режим работы и контакты магазина — фронтенд показывает их клиенту."""
+    """Режим работы и контакты магазина — фронтенд показывает их клиенту.
+
+    Приоритет источников: настройки в БД (store_settings) > переменные
+    окружения (.env) > вшитые дефолты. Поэтому один и тот же код работает
+    для любого клиента — достаточно правки настроек.
+    """
+    ov = await _store_overrides()
+    name = ov.get("name") or settings.STORE_NAME
+    slogan = ov.get("slogan") or settings.STORE_SLOGAN
+    city = ov.get("city") or settings.STORE_CITY
+    phone = ov.get("phone") or settings.STORE_PHONE
+    phone_href = ov.get("phone_href") or settings.STORE_PHONE_HREF
+    address = ov.get("address") or settings.STORE_ADDRESS
+    maps_url = ov.get("maps_url") or settings.STORE_MAPS_URL
+    logo = ov.get("logo") or settings.STORE_LOGO
+    open_hour, close_hour, work_hours = _work_hours_from_overrides(ov)
+
     store_tz = timezone(timedelta(hours=settings.STORE_UTC_OFFSET_HOURS))
     now = datetime.now(store_tz)
-    open_hour = settings.STORE_OPEN_HOUR
-    close_hour = settings.STORE_CLOSE_HOUR
     is_open = open_hour <= now.hour < close_hour
     return {
-        "name": settings.STORE_NAME,
-        "phone": settings.STORE_PHONE,
-        "phone_href": settings.STORE_PHONE_HREF,
-        "address": settings.STORE_ADDRESS,
-        "maps_url": settings.STORE_MAPS_URL,
+        "name": name,
+        "slogan": slogan,
+        "city": city,
+        "phone": phone,
+        "phone_href": phone_href,
+        "address": address,
+        "maps_url": maps_url,
+        "logo": logo,
         "lat": settings.STORE_LAT,
         "lon": settings.STORE_LON,
         "rating": settings.STORE_RATING,
         "rating_count": settings.STORE_RATING_COUNT,
         "open_hour": open_hour,
         "close_hour": close_hour,
+        "work_hours": work_hours,
         "is_open": is_open,
         "local_time": now.isoformat(timespec="minutes"),
         "night_start_hour": settings.NIGHT_ORDER_START_HOUR,
@@ -1318,3 +1384,64 @@ async def admin_stats(user: dict = Depends(auth.current_owner)) -> dict[str, obj
         "by_status": {row["status"]: row["cnt"] for row in by_status},
         "statuses": ORDER_STATUS_LABELS,
     }
+
+
+# ---------------------------------------------------------------------------
+# Настройки магазина (white-label) — кабинет владельца
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api/admin/store-settings")
+async def admin_get_store_settings(
+    user: dict = Depends(auth.current_owner),
+) -> dict[str, object]:
+    """Текущие editable-настройки магазина (то, что лежит в БД).
+
+    None = переопределения нет → на витрине берётся дефолт из .env.
+    Фронтенд подставляет дефолты, чтобы форма не была пустой.
+    """
+    ov = await _store_overrides()
+    return {key: (ov.get(key) if key in ov else None) for key in STORE_SETTINGS_KEYS}
+
+
+@app.put("/api/admin/store-settings")
+async def admin_update_store_settings(
+    payload: StoreSettingsIn,
+    user: dict = Depends(auth.current_owner),
+) -> dict[str, object]:
+    """Сохранить настройки магазина. Только владелец.
+
+    Учитываются только переданные поля. Непустое значение — переопределяет
+    дефолт; пустая строка / None — снимает переопределение (возврат к .env).
+    """
+    changes = {
+        key: value
+        for key, value in payload.model_dump(exclude_unset=True).items()
+        if key in STORE_SETTINGS_KEYS
+    }
+    saved: list[str] = []
+    cleared: list[str] = []
+    async with db.transaction() as conn:
+        for key, value in changes.items():
+            if value is None or str(value).strip() == "":
+                await conn.execute("DELETE FROM store_settings WHERE key = $1", key)
+                cleared.append(key)
+            else:
+                await conn.execute(
+                    """
+                    INSERT INTO store_settings (key, value) VALUES ($1, $2)
+                    ON CONFLICT (key) DO UPDATE
+                    SET value = EXCLUDED.value, updated_at = now()
+                    """,
+                    key,
+                    str(value),
+                )
+                saved.append(key)
+    logger.info(
+        "Настройки магазина обновлены (%s): изменены=%s, сняты=%s",
+        user.get("email"),
+        saved,
+        cleared,
+    )
+    ov = await _store_overrides()
+    return {key: (ov.get(key) if key in ov else None) for key in STORE_SETTINGS_KEYS}

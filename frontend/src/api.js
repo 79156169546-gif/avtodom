@@ -181,3 +181,13 @@ export function deleteAdminProduct(productId, restore = false) {
 export function fetchAdminStats() {
   return request('/api/admin/stats')
 }
+
+// --- настройки магазина (white-label) --------------------------------------
+
+export function fetchStoreSettings() {
+  return request('/api/admin/store-settings')
+}
+
+export function updateStoreSettings(payload) {
+  return request('/api/admin/store-settings', { method: 'PUT', body: payload })
+}

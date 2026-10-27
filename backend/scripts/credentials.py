@@ -2,10 +2,10 @@
 
 Пароль владельца не должен лежать в репозитории: репозиторий публичный.
 Этот модуль читает его из локального файла `backend/.env.credentials`
-(он в .gitignore) или из переменной окружения `AUTODOM_OWNER_PASSWORD`.
+(он в .gitignore) или из переменной окружения `STORE_OWNER_PASSWORD`.
 
 Порядок поиска:
-1. переменная окружения AUTODOM_OWNER_EMAIL / AUTODOM_OWNER_PASSWORD;
+1. переменная окружения STORE_OWNER_EMAIL / STORE_OWNER_PASSWORD;
 2. файл backend/.env.credentials рядом с этим модулем;
 3. значение по умолчанию — если файл не найден, тесты объяснят, что делать.
 
@@ -52,24 +52,24 @@ def owner_credentials() -> tuple[str, str]:
     Бросает RuntimeError с понятной инструкцией, если пароль не найден:
     тест без пароля владельца всё равно упадёт, но падать должно понятно.
     """
-    email = os.environ.get("AUTODOM_OWNER_EMAIL", "").strip()
-    password = os.environ.get("AUTODOM_OWNER_PASSWORD", "").strip()
+    email = os.environ.get("STORE_OWNER_EMAIL", "").strip()
+    password = os.environ.get("STORE_OWNER_PASSWORD", "").strip()
 
     if not email or not password:
         file_values = _read_credentials_file()
-        email = email or file_values.get("AUTODOM_OWNER_EMAIL", "").strip()
-        password = password or file_values.get("AUTODOM_OWNER_PASSWORD", "").strip()
+        email = email or file_values.get("STORE_OWNER_EMAIL", "").strip()
+        password = password or file_values.get("STORE_OWNER_PASSWORD", "").strip()
 
     if not password:
         raise RuntimeError(
             "Не найден пароль владельца.\n"
             "Создайте файл backend/.env.credentials с содержимым:\n"
-            "    AUTODOM_OWNER_EMAIL=owner@autodom.ru\n"
-            "    AUTODOM_OWNER_PASSWORD=<пароль>\n"
-            "или задайте переменные окружения AUTODOM_OWNER_EMAIL и "
-            "AUTODOM_OWNER_PASSWORD.\n"
+            "    STORE_OWNER_EMAIL=admin@example.com\n"
+            "    STORE_OWNER_PASSWORD=<пароль>\n"
+            "или задайте переменные окружения STORE_OWNER_EMAIL и "
+            "STORE_OWNER_PASSWORD.\n"
             "Сгенерировать новый пароль:\n"
-            '    python backend/scripts/create_owner.py --email owner@autodom.ru '
+            '    python backend/scripts/create_owner.py --email admin@example.com '
             '--password "<новый>" --rotate'
         )
 

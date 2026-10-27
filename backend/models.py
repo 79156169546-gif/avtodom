@@ -345,3 +345,44 @@ class UserOut(BaseModel):
 class AuthOut(BaseModel):
     token: str
     user: UserOut
+
+
+# ---------------------------------------------------------------------------
+# Настройки магазина (white-label)
+# ---------------------------------------------------------------------------
+
+# Ключи настроек, editable владельцем из кабинета. Значения хранятся в БД
+# (таблица store_settings) и переопределяют дефолты из settings.py.
+STORE_SETTINGS_KEYS: tuple[str, ...] = (
+    "name",
+    "slogan",
+    "city",
+    "phone",
+    "phone_href",
+    "address",
+    "maps_url",
+    "logo",
+    "work_hours",
+    "open_hour",
+    "close_hour",
+)
+
+
+class StoreSettingsIn(BaseModel):
+    """Часть настроек магазина, которую меняет владелец из кабинета.
+
+    Передаётся только то, что нужно обновить; остальные ключи не трогаются.
+    Пустая строка обнуляет значение (возврат к дефолту из .env).
+    """
+
+    name: str | None = Field(default=None, max_length=120)
+    slogan: str | None = Field(default=None, max_length=200)
+    city: str | None = Field(default=None, max_length=120)
+    phone: str | None = Field(default=None, max_length=40)
+    phone_href: str | None = Field(default=None, max_length=120)
+    address: str | None = Field(default=None, max_length=400)
+    maps_url: str | None = Field(default=None, max_length=400)
+    logo: str | None = Field(default=None, max_length=400)
+    work_hours: str | None = Field(default=None, max_length=40)
+    open_hour: int | None = Field(default=None, ge=0, le=23)
+    close_hour: int | None = Field(default=None, ge=0, le=23)

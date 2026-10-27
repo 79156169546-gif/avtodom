@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import sys
 import urllib.request
+from urllib.parse import quote
 
 BASE = "http://127.0.0.1:8000"
 
@@ -56,7 +57,10 @@ def main() -> int:
     if status != 201:
         return 1
 
-    status, stored = call(f"/api/orders/{order['order_number']}")
+    # Доступ к заказу закрыт без телефона/сессии — передаём телефон из заказа.
+    status, stored = call(
+        f"/api/orders/{order['order_number']}?phone={quote(order['phone'])}"
+    )
     print("stored:", status, json.dumps(stored, ensure_ascii=False))
     return 0 if status == 200 else 1
 

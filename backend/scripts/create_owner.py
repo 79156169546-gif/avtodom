@@ -1,8 +1,8 @@
 """Создание/обновление владельца магазина.
 
 Использование:
-    python backend/scripts/create_owner.py --email owner@autodom.ru --password "секрет"
-    python backend/scripts/create_owner.py --email owner@autodom.ru --password "секрет" --rotate
+    python backend/scripts/create_owner.py --email admin@example.com --password "секрет"
+    python backend/scripts/create_owner.py --email admin@example.com --password "секрет" --rotate
 
 Если аккаунт уже есть — обновляется пароль (при --rotate) или ничего не
 происходит (без флага: сообщается, что аккаунт существует).

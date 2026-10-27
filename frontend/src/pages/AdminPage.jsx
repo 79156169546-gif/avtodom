@@ -5,9 +5,12 @@ import {
   fetchAdminOrders,
   fetchAdminProducts,
   fetchAdminStats,
+  fetchStoreSettings,
   updateAdminOrder,
   updateAdminProduct,
+  updateStoreSettings,
 } from '../api.js'
+import storeConfig from '../config.js'
 import { formatPrice, statusMeta } from '../lib/format.js'
 import OrderCard, { STATUS_OPTIONS } from '../components/OrderCard.jsx'
 import ProductDrawer, {
@@ -32,6 +35,22 @@ const SORTS = [
   { id: 'oldest', title: 'Сначала старые' },
   { id: 'night_first', title: 'Приоритетные сверху' },
 ]
+
+// Дефолты настроек магазина (из config.js) — подставляются в форму, пока
+// в БД нет переопределения. Ключи совпадают с API /api/admin/store-settings.
+const settingsDefault = {
+  name: storeConfig.name,
+  slogan: storeConfig.slogan,
+  city: storeConfig.city,
+  phone: storeConfig.phone,
+  phone_href: storeConfig.phoneHref,
+  address: storeConfig.address,
+  maps_url: storeConfig.mapsUrl,
+  logo: storeConfig.logo,
+  work_hours: storeConfig.workHours,
+  open_hour: String(storeConfig.openHour),
+  close_hour: String(storeConfig.closeHour),
+}
 
 function isoDate(date) {
   const year = date.getFullYear()
@@ -88,6 +107,124 @@ function parseCompatibility(text) {
     .filter(Boolean)
 }
 
+function SettingsPanel({ draft, onChange, onSave, saving }) {
+  const bind = (key) => ({
+    value: draft?.[key] ?? '',
+    onChange: (e) => onChange((d) => (d ? { ...d, [key]: e.target.value } : d)),
+  })
+  const inputCls =
+    'mt-1 block w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 shadow-sm focus:border-orange-500 focus:outline-none focus:ring-1 focus:ring-orange-500'
+
+  return (
+    <div className="mt-4 space-y-4">
+      <div className="card space-y-4 p-5">
+        <p className="text-sm text-gray-500">
+          Эти данные показываются клиентам в шапке и подвале витрины.
+          Изменения сохраняются в базу и сразу видны на сайте.
+        </p>
+
+        <div className="grid gap-4 sm:grid-cols-2">
+          <label className="block">
+            <span className="block text-sm font-medium text-gray-700">Название магазина</span>
+            <input className={inputCls} {...bind('name')} placeholder="Автомагазин" />
+          </label>
+          <label className="block">
+            <span className="block text-sm font-medium text-gray-700">Город</span>
+            <input className={inputCls} {...bind('city')} placeholder="Ваш город" />
+          </label>
+        </div>
+
+        <label className="block">
+          <span className="block text-sm font-medium text-gray-700">Слоган</span>
+          <input className={inputCls} {...bind('slogan')} placeholder="Запчасти для вашего авто" />
+        </label>
+
+        <div className="grid gap-4 sm:grid-cols-2">
+          <label className="block">
+            <span className="block text-sm font-medium text-gray-700">Телефон (как показывать)</span>
+            <input className={inputCls} {...bind('phone')} placeholder="+7 (900) 000-00-00" />
+          </label>
+          <label className="block">
+            <span className="block text-sm font-medium text-gray-700">Телефон для набора (tel:)</span>
+            <input className={inputCls} {...bind('phone_href')} placeholder="tel:+79000000000" />
+            <span className="mt-1 block text-xs text-gray-400">
+              Ссылка для кнопки «Позвонить». Цифры и плюс, без пробелов.
+            </span>
+          </label>
+        </div>
+
+        <label className="block">
+          <span className="block text-sm font-medium text-gray-700">Адрес</span>
+          <input className={inputCls} {...bind('address')} placeholder="ул. Примерная, 1, Ваш город" />
+        </label>
+
+        <label className="block">
+          <span className="block text-sm font-medium text-gray-700">Ссылка на карту</span>
+          <input className={inputCls} {...bind('maps_url')} placeholder="https://yandex.ru/maps/…" />
+        </label>
+
+        <label className="block">
+          <span className="block text-sm font-medium text-gray-700">Логотип (URL картинки)</span>
+          <input className={inputCls} {...bind('logo')} placeholder="https://…/logo.png" />
+          <span className="mt-1 block text-xs text-gray-400">
+            Если пусто — в шапке покажется круг с первой буквой названия.
+          </span>
+        </label>
+      </div>
+
+      <div className="card p-5">
+        <p className="text-sm font-semibold text-gray-900">Режим работы</p>
+        <div className="mt-3 grid gap-4 sm:grid-cols-3">
+          <label className="block">
+            <span className="block text-sm font-medium text-gray-700">Часы работы</span>
+            <input
+              className={inputCls}
+              {...bind('work_hours')}
+              placeholder="09:00–20:00"
+            />
+            <span className="mt-1 block text-xs text-gray-400">Формат «СС:ММ–СС:ММ».</span>
+          </label>
+          <label className="block">
+            <span className="block text-sm font-medium text-gray-700">Открываем в час</span>
+            <input
+              type="number"
+              min={0}
+              max={23}
+              className={inputCls}
+              {...bind('open_hour')}
+            />
+          </label>
+          <label className="block">
+            <span className="block text-sm font-medium text-gray-700">Закрываем в час</span>
+            <input
+              type="number"
+              min={0}
+              max={23}
+              className={inputCls}
+              {...bind('close_hour')}
+            />
+          </label>
+        </div>
+      </div>
+
+      <div className="flex items-center gap-3">
+        <button
+          type="button"
+          data-testid="admin-settings-save"
+          onClick={onSave}
+          disabled={saving}
+          className="btn-primary"
+        >
+          {saving ? 'Сохраняем…' : 'Сохранить настройки'}
+        </button>
+        <span className="text-xs text-gray-400">
+          Пустое поле снимает изменение и возвращает значение по умолчанию.
+        </span>
+      </div>
+    </div>
+  )
+}
+
 export default function AdminPage() {
   const [tab, setTab] = useState('orders')
   const [orders, setOrders] = useState([])
@@ -114,6 +251,12 @@ export default function AdminPage() {
   )
   const [expanded, setExpanded] = useState(false)
   const [customRange, setCustomRange] = useState({ dateFrom: '', dateTo: '' })
+
+  // Настройки магазина (white-label): телефон, адрес, режим работы и т.п.
+  // Хранятся в БД, редактируются владельцем прямо из кабинета.
+  const [storeSettings, setStoreSettings] = useState(null)
+  const [settingsDraft, setSettingsDraft] = useState(null)
+  const [settingsSaving, setSettingsSaving] = useState(false)
 
   // Заказы и каталог грузим раздельно: смена фильтра заказов не должна
   // заново тянуть весь каталог и статистику — иначе каждый клик ждёт
@@ -153,6 +296,44 @@ export default function AdminPage() {
     }
   }, [])
 
+  const loadSettings = useCallback(async () => {
+    try {
+      const saved = await fetchStoreSettings()
+      // Дефолты подставляем поверх пустых — чтобы форма сразу показывала
+      // актуальные значения (из .env или вшитых), а не была пустой.
+      const merged = {}
+      for (const key of Object.keys(saved)) {
+        merged[key] = saved[key] ?? settingsDefault[key] ?? ''
+      }
+      setStoreSettings(saved)
+      setSettingsDraft(merged)
+    } catch (err) {
+      setError(err.message || 'Не удалось загрузить настройки')
+    }
+  }, [])
+
+  const saveSettings = async () => {
+    if (!settingsDraft) return
+    setSettingsSaving(true)
+    setError('')
+    try {
+      // Отправляем только отличные от дефолта поля; пустая строка снимает
+      // переопределение (возврат к значению из .env).
+      const payload = {}
+      for (const [key, value] of Object.entries(settingsDraft)) {
+        const cur = (storeSettings && storeSettings[key]) || ''
+        if (value !== cur) payload[key] = (value ?? '').toString().trim()
+      }
+      await updateStoreSettings(payload)
+      setNotice('Настройки магазина сохранены')
+      await loadSettings()
+    } catch (err) {
+      setError(err.message || 'Не удалось сохранить настройки')
+    } finally {
+      setSettingsSaving(false)
+    }
+  }
+
   useEffect(() => {
     loadOrders()
   }, [loadOrders])
@@ -160,7 +341,8 @@ export default function AdminPage() {
   useEffect(() => {
     loadProducts()
     loadStats()
-  }, [loadProducts, loadStats])
+    loadSettings()
+  }, [loadProducts, loadStats, loadSettings])
 
   // Поиск применяем с задержкой, чтобы не дёргать сервер на каждую букву.
   useEffect(() => {
@@ -370,6 +552,7 @@ export default function AdminPage() {
         {[
           ['orders', 'Заказы'],
           ['products', 'Каталог'],
+          ['settings', 'Настройки'],
         ].map(([key, title]) => (
           <button
             key={key}
@@ -800,6 +983,15 @@ export default function AdminPage() {
             </>
           ) : null}
         </div>
+      ) : null}
+
+      {tab === 'settings' ? (
+        <SettingsPanel
+          draft={settingsDraft}
+          saving={settingsSaving}
+          onChange={setSettingsDraft}
+          onSave={saveSettings}
+        />
       ) : null}
 
       <ProductDrawer

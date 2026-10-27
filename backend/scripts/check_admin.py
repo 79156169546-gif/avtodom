@@ -58,11 +58,10 @@ def find_chromium() -> Path | None:
 
 
 def main() -> int:
-    playwright_dir = find_playwright()
     chromium = find_chromium()
 
     script = f"""
-import {{ chromium }} from 'file:///{(playwright_dir / "index.mjs").as_posix()}';
+import {{ chromium }} from 'playwright';
 
 const BASE = 'http://127.0.0.1:5173';
 const results = [];
@@ -103,7 +102,12 @@ await page.goto(BASE + '/login', {{ waitUntil: 'domcontentloaded' }});
 await page.locator('[data-testid="login-email"]').fill('__OWNER_EMAIL__');
 await page.locator('[data-testid="login-password"]').fill('__OWNER_PASSWORD__');
 await page.locator('[data-testid="login-submit"]').click();
-await wait(2500);
+// Ждём именно появления токена: на холодном Vite вход иногда дольше 2.5 c.
+await page.waitForFunction(
+  () => Boolean(localStorage.getItem('autodom.token')),
+  {{ timeout: 15000 }},
+).catch(() => {{}});
+await wait(800);
 check('вход выполнен, токен сохранён',
   await page.evaluate(() => Boolean(localStorage.getItem('autodom.token'))), true);
 await page.goto(BASE + '/admin', {{ waitUntil: 'domcontentloaded' }});

@@ -78,7 +78,7 @@ NODE_SCRIPT = FRONTEND / "scripts" / "check_catalog.mjs"
 
 def main() -> int:
     script = f"""
-import {{ chromium }} from 'file:///{(PLAYWRIGHT_DIR / "index.mjs").as_posix()}';
+import {{ chromium }} from 'playwright';
 
 const BASE = 'http://127.0.0.1:5173';
 const results = [];

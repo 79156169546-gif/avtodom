@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Link, NavLink, Route, Routes, useNavigate } from 'react-router-dom'
 import { fetchStoreInfo } from './api.js'
+import storeConfig, { firstLetter, isStoreOpen, parseWorkHours } from './config.js'
 import { useAuth } from './auth.jsx'
 import AdminPage from './pages/AdminPage.jsx'
 import CabinetPage from './pages/CabinetPage.jsx'
@@ -8,13 +9,24 @@ import LoginPage from './pages/LoginPage.jsx'
 import RegisterPage from './pages/RegisterPage.jsx'
 import StorefrontPage from './pages/StorefrontPage.jsx'
 
-function StoreLogo({ name }) {
+function StoreLogo({ name, logo }) {
+  const letter = firstLetter(name)
+  // Если задан логотип — показываем картинку, иначе — круг с буквой.
+  if (logo) {
+    return (
+      <img
+        src={logo}
+        alt={name || 'Логотип магазина'}
+        className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl object-cover shadow-sm"
+      />
+    )
+  }
   return (
     <span
       aria-hidden="true"
-      className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-gradient-to-br from-accent-strong to-accent-deep text-xl shadow-sm"
+      className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-gradient-to-br from-accent-strong to-accent-deep text-xl font-bold text-white shadow-sm"
     >
-      <span className="text-white">🚗</span>
+      {letter}
     </span>
   )
 }
@@ -45,12 +57,13 @@ function Header() {
         : 'text-gray-600 hover:bg-gray-50'
     }`
 
-  const phoneHref = store?.phone_href ?? 'tel:+79610108001'
-  const phoneText = store?.phone ?? '+7 (961) 010-80-01'
-  const address = store?.address ?? 'ул. Высоковольтная, 49, Рязань'
-  const mapsUrl = store?.maps_url ?? 'https://yandex.ru/maps/org/avtodom/56955083106/'
-  const openHour = store?.open_hour ?? 8
-  const closeHour = store?.close_hour ?? 20
+  const phoneHref = store?.phone_href ?? storeConfig.phoneHref
+  const phoneText = store?.phone ?? storeConfig.phone
+  const address = store?.address ?? storeConfig.address
+  const mapsUrl = store?.maps_url ?? storeConfig.mapsUrl
+  const openHour = store?.open_hour ?? parseWorkHours(storeConfig.workHours).open
+  const closeHour = store?.close_hour ?? parseWorkHours(storeConfig.workHours).close
+  const storeName = store?.name ?? storeConfig.name
 
   return (
     <header className="sticky top-0 z-20 border-b border-gray-200 bg-white/95 backdrop-blur">
@@ -109,17 +122,17 @@ function Header() {
       {/* Основная строка */}
       <div className="mx-auto flex max-w-5xl items-center justify-between gap-3 px-4 py-3 sm:px-6">
         <div className="flex min-w-0 items-center gap-3">
-          <StoreLogo />
+          <StoreLogo name={storeName} logo={store?.logo || storeConfig.logo} />
           <div className="min-w-0">
             <Link
               to="/"
               data-testid="header-store-name"
               className="block truncate text-lg font-bold leading-tight text-gray-900 transition hover:text-accent-strong focus:outline-none focus:ring-2 focus:ring-orange-500"
             >
-              {store?.name ?? 'Автодом'}
+              {storeName}
             </Link>
             <span className="block truncate text-xs text-gray-500">
-              Запчасти для вашего авто · Рязань
+              {(store?.slogan || storeConfig.slogan)} · {(store?.city || storeConfig.city)}
             </span>
           </div>
           <nav className="ml-4 hidden items-center gap-1 sm:flex">

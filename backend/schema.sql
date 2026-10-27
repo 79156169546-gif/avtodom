@@ -176,3 +176,14 @@ CREATE INDEX IF NOT EXISTS idx_telegram_buttons_order ON telegram_buttons(order_
 
 -- Номера заказов --------------------------------------------------------
 CREATE SEQUENCE IF NOT EXISTS order_num_seq START 1;
+
+-- Настройки магазина (white-label) ----------------------------------------
+-- Ключ-значение: владелец правит телефон/адрес/режим работы и т.п. прямо
+-- из «Кабинета владельца». Значения из этой таблицы переопределяют дефолты
+-- из settings.py (которые, в свою очередь, берутся из .env). Таблица
+-- идемпотентна: повторное применение схему не ломает.
+CREATE TABLE IF NOT EXISTS store_settings (
+    key        TEXT PRIMARY KEY,
+    value      TEXT,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);

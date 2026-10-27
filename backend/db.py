@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 from typing import Any
 
 import asyncpg
@@ -50,6 +51,19 @@ async def fetchval(query: str, *args: Any) -> Any:
     pool = await get_pool()
     async with pool.acquire() as conn:
         return await conn.fetchval(query, *args)
+
+
+@asynccontextmanager
+async def transaction():
+    """Контекстный менеджер атомарной транзакции (yield conn).
+
+    Все запросы внутри либо применяются целиком, либо не применяются.
+    Нужен, например, при пакетном сохранении настроек магазина.
+    """
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            yield conn
 
 
 async def execute(query: str, *args: Any) -> str:
