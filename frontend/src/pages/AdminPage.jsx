@@ -142,11 +142,11 @@ function SettingsPanel({ draft, onChange, onSave, saving }) {
         <div className="grid gap-4 sm:grid-cols-2">
           <label className="block">
             <span className="block text-sm font-medium text-gray-700">Телефон (как показывать)</span>
-            <input className={inputCls} {...bind('phone')} placeholder="+7 (900) 000-00-00" />
+            <input className={inputCls} {...bind('phone')} placeholder="+7 (999) 000-00-00" />
           </label>
           <label className="block">
             <span className="block text-sm font-medium text-gray-700">Телефон для набора (tel:)</span>
-            <input className={inputCls} {...bind('phone_href')} placeholder="tel:+79000000000" />
+            <input className={inputCls} {...bind('phone_href')} placeholder="tel:+79990000000" />
             <span className="mt-1 block text-xs text-gray-400">
               Ссылка для кнопки «Позвонить». Цифры и плюс, без пробелов.
             </span>
@@ -155,7 +155,7 @@ function SettingsPanel({ draft, onChange, onSave, saving }) {
 
         <label className="block">
           <span className="block text-sm font-medium text-gray-700">Адрес</span>
-          <input className={inputCls} {...bind('address')} placeholder="ул. Примерная, 1, Ваш город" />
+          <input className={inputCls} {...bind('address')} placeholder="Ваш город, ул. Примерная, 1" />
         </label>
 
         <label className="block">
@@ -180,7 +180,7 @@ function SettingsPanel({ draft, onChange, onSave, saving }) {
             <input
               className={inputCls}
               {...bind('work_hours')}
-              placeholder="09:00–20:00"
+              placeholder="08:00–20:00"
             />
             <span className="mt-1 block text-xs text-gray-400">Формат «СС:ММ–СС:ММ».</span>
           </label>

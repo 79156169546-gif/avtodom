@@ -40,7 +40,7 @@ export const storeConfig = {
   // URL/путь к логотипу. Пусто — выводится круг с первой буквой названия.
   logo: pick('VITE_STORE_LOGO', ''),
   // Часы работы для офлайн-индикатора (когда бэкенд не отвечает).
-  openHour: Number(pick('VITE_STORE_OPEN_HOUR', '9')),
+  openHour: Number(pick('VITE_STORE_OPEN_HOUR', '8')),
   closeHour: Number(pick('VITE_STORE_CLOSE_HOUR', '20')),
 }
 
